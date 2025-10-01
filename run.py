@@ -2,7 +2,7 @@ import argparse
 import configparser
 from pathlib import Path
 from dotenv import load_dotenv, find_dotenv
-
+from src.tinker import start_analysis
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Firmware input and log output.")
@@ -21,14 +21,15 @@ def parse_arguments() -> argparse.Namespace:
     args = parser.parse_args()
 
     firmware_path = Path(args.fw)
-    log_path = Path(args.log) if args.log else Path("logs") / f"{firmware_path.stem}.log"
+    firmware_name = firmware_path.stem.split(".")[0]
+    log_path = Path(args.log) if args.log else Path("logs") / f"{firmware_name}.log"
     config_path = Path(args.config)
 
     args.fw = firmware_path
+    args.fw_name = firmware_name
     args.log = log_path
     args.config = config_path
     return args
-
 
 def load_config(config_path: Path) -> configparser.ConfigParser:
     config = configparser.ConfigParser()
@@ -38,21 +39,13 @@ def load_config(config_path: Path) -> configparser.ConfigParser:
     config.read(config_path)
     return config
 
-
-def ensure_log_directory(log_path: Path) -> None:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
-
 def main() -> None:
     load_dotenv(find_dotenv(usecwd=True))
     args = parse_arguments()
-    ensure_log_directory(args.log)
     config = load_config(args.config)
-
-    print(f"Firmware path: {args.fw}")
-    print(f"Log path: {args.log}")
-    print(f"Loaded config sections: {', '.join(config.sections()) or '(none)'}")
-
+    args.penguin_proj = Path(f"{config['Penguin']['output_dir']}/{args.fw_name}")
+    print(f"FW: {args.fw}, Log: {args.log}, Model: {config['Ollama']['model']}")
+    start_analysis(config, args)
 
 if __name__ == "__main__":
     main()
