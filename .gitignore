@@ -1,0 +1,6 @@
+.env
+temp
+projects
+logs
+py-tinker
+src/__pycache__

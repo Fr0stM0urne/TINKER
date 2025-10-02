@@ -1,0 +1,9 @@
+The target firmware has been executed with Penguin and the initial config.yaml.
+
+Reason through the following Penguin output to find important errors/failures and figure out what you should address first using your tools.
+
+IMPORTANT TIPS:
+1. You do not need to initiate the rehosting process each time. That will happen automatically. Do not invoke a tool to run Penguin.
+2. Prioritize new failures that arise after you have made a change because these likely arose from deeper execution into the control flow of the firmware.
+3. Do not make the same tool call with the same arguments. This is redundant and serves no purpose.
+4. Just because you see a pseudofile failure, it doesn't mean you should immediately add it. Reason through the console log, the number and type of accesses, etc. to find the most impactful intervention.
