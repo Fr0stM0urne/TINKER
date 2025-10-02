@@ -1,0 +1,3 @@
+[submodule "penguin"]
+	path = penguin
+	url = https://github.com/rehosting/penguin
