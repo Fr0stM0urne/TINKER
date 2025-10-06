@@ -1,0 +1,1 @@
+"""Firmware rehosting specific schemas."""

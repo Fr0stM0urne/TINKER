@@ -1,33 +1,17 @@
-import subprocess
-import os
-from pathlib import Path
-from typing import Dict, Optional, List
-import yaml
+"""Result collection, parsing, and analysis for Penguin executions."""
+
 import csv
+import yaml
+from pathlib import Path
+from typing import Dict, Optional, List, Any
+from configparser import ConfigParser
 
 
-def penguin_init(config, fw):
-    """Initialize firmware with Penguin."""
-    print(f"\n===== Running Penguin INIT =====", flush=True)
-    cmd = ["penguin", "--image", config['Penguin']['image'], "init", fw]
-    print(f"[cmd] {cmd}", flush=True)
-    result = subprocess.run(cmd)
-    return result
-
-
-def penguin_run(config, penguin_proj):
-    """Run Penguin rehosting for specified timeout."""
-    print(f"\n===== Running Penguin for {config['Penguin']['iteration_timeout']} minutes =====", flush=True)
-    timeout = int(config['Penguin']['iteration_timeout']) * 60
-    firmware_config = penguin_proj / "config.yaml"
-    cmd = ["penguin", "--image", config['Penguin']['image'], "run", firmware_config,
-            "--timeout", str(timeout)]
-    print(f"[cmd] {cmd}", flush=True)
-    result = subprocess.run(cmd)
-    return result
-
-
-def get_penguin_results_dir(config, penguin_proj: Path, run_number: Optional[int] = None) -> Optional[Path]:
+def get_penguin_results_dir(
+    config: ConfigParser,
+    penguin_proj: Path,
+    run_number: Optional[int] = None
+) -> Optional[Path]:
     """
     Get the results directory for a Penguin project.
     
@@ -38,6 +22,11 @@ def get_penguin_results_dir(config, penguin_proj: Path, run_number: Optional[int
         
     Returns:
         Path to results directory, or None if not found
+        
+    Example:
+        >>> results_dir = get_penguin_results_dir(config, Path("projects/fw"))
+        >>> if results_dir:
+        ...     print(f"Results in: {results_dir}")
     """
     results_base = penguin_proj / "results"
     
@@ -69,7 +58,11 @@ def get_penguin_results_dir(config, penguin_proj: Path, run_number: Optional[int
         return latest_dir
 
 
-def get_penguin_results(config, penguin_proj: Path, run_number: Optional[int] = None) -> Dict:
+def get_penguin_results(
+    config: ConfigParser,
+    penguin_proj: Path,
+    run_number: Optional[int] = None
+) -> Dict[str, Any]:
     """
     Collect all Penguin results into a structured dictionary.
     
@@ -79,7 +72,21 @@ def get_penguin_results(config, penguin_proj: Path, run_number: Optional[int] = 
         run_number: Specific run number to retrieve, or None for latest
         
     Returns:
-        Dictionary containing all result files and parsed data
+        Dictionary containing all result files and parsed data with structure:
+        {
+            "success": bool,
+            "results_dir": str,
+            "run_number": int,
+            "files": {filename: content},
+            "parsed": {filename: parsed_data},
+            "summary": {statistics and errors}
+        }
+        
+    Example:
+        >>> results = get_penguin_results(config, Path("projects/fw"))
+        >>> if results["success"]:
+        ...     print(f"Collected {results['summary']['files_collected']} files")
+        ...     errors = get_penguin_errors(results)
     """
     results_dir = get_penguin_results_dir(config, penguin_proj, run_number)
     
@@ -153,20 +160,68 @@ def get_penguin_results(config, penguin_proj: Path, run_number: Optional[int] = 
     return results
 
 
-def _parse_yaml(file_path: Path) -> Dict:
+def get_penguin_errors(results: Dict[str, Any]) -> List[str]:
+    """
+    Extract error messages from Penguin results.
+    
+    Args:
+        results: Results dictionary from get_penguin_results()
+        
+    Returns:
+        List of error messages found, or ["No errors found"] if clean
+        
+    Example:
+        >>> results = get_penguin_results(config, proj_path)
+        >>> errors = get_penguin_errors(results)
+        >>> for error in errors:
+        ...     print(f"Error: {error}")
+    """
+    errors = []
+    
+    # Check console.log for errors
+    console = results["files"].get("console.log", "")
+    if console and isinstance(console, str):
+        console_lines = console.split('\n')
+        error_lines = [
+            line for line in console_lines
+            if any(keyword in line.lower() for keyword in ["error", "failed", "exception", "traceback"])
+        ]
+        if error_lines:
+            errors.append("Console errors:\n" + "\n".join(error_lines[:20]))  # Limit to 20 lines
+    
+    # Check env_missing
+    if results["parsed"].get("env_missing.yaml"):
+        env_missing = results["parsed"]["env_missing.yaml"]
+        if env_missing:
+            count = len(env_missing) if isinstance(env_missing, (list, dict)) else 1
+            errors.append(f"Missing environment variables: {count}")
+    
+    # Check pseudofile failures
+    if results["parsed"].get("pseudofiles_failures.yaml"):
+        failures = results["parsed"]["pseudofiles_failures.yaml"]
+        if failures:
+            count = len(failures) if isinstance(failures, (list, dict)) else 1
+            errors.append(f"Pseudofile failures: {count}")
+    
+    return errors if errors else ["No errors found"]
+
+
+# Private helper functions
+
+def _parse_yaml(file_path: Path) -> Dict[str, Any]:
     """Parse YAML file."""
     with open(file_path, 'r') as f:
         return yaml.safe_load(f) or {}
 
 
-def _parse_csv(file_path: Path) -> List[Dict]:
+def _parse_csv(file_path: Path) -> List[Dict[str, Any]]:
     """Parse CSV file into list of dicts."""
     with open(file_path, 'r') as f:
         reader = csv.DictReader(f)
         return list(reader)
 
 
-def _generate_summary(results: Dict) -> Dict:
+def _generate_summary(results: Dict[str, Any]) -> Dict[str, Any]:
     """Generate a summary of the results for quick analysis."""
     summary = {
         "files_collected": len([f for f in results["files"].values() if f is not None]),
@@ -202,84 +257,3 @@ def _generate_summary(results: Dict) -> Dict:
     
     return summary
 
-
-def get_penguin_errors(results: Dict) -> List[str]:
-    """
-    Extract error messages from Penguin results.
-    
-    Args:
-        results: Results dictionary from get_penguin_results()
-        
-    Returns:
-        List of error messages found
-    """
-    errors = []
-    
-    # Check console.log for errors
-    console = results["files"].get("console.log", "")
-    if console and isinstance(console, str):
-        console_lines = console.split('\n')
-        error_lines = [
-            line for line in console_lines
-            if any(keyword in line.lower() for keyword in ["error", "failed", "exception", "traceback"])
-        ]
-        if error_lines:
-            errors.append("Console errors:\n" + "\n".join(error_lines[:20]))  # Limit to 20 lines
-    
-    # Check env_missing
-    if results["parsed"].get("env_missing.yaml"):
-        env_missing = results["parsed"]["env_missing.yaml"]
-        if env_missing:
-            count = len(env_missing) if isinstance(env_missing, (list, dict)) else 1
-            errors.append(f"Missing environment variables: {count}")
-    
-    # Check pseudofile failures
-    if results["parsed"].get("pseudofiles_failures.yaml"):
-        failures = results["parsed"]["pseudofiles_failures.yaml"]
-        if failures:
-            count = len(failures) if isinstance(failures, (list, dict)) else 1
-            errors.append(f"Pseudofile failures: {count}")
-    
-    return errors if errors else ["No errors found"]
-
-
-def format_results_for_llm(results: Dict) -> str:
-    """
-    Format results in a concise way suitable for LLM consumption.
-    
-    Args:
-        results: Results dictionary from get_penguin_results()
-        
-    Returns:
-        Formatted string summary
-    """
-    if not results["success"]:
-        return f"Failed to collect results: {results.get('error', 'Unknown error')}"
-    
-    output = []
-    output.append(f"=== Penguin Results (Run #{results['run_number']}) ===\n")
-    
-    # Summary statistics
-    output.append("Summary:")
-    for key, value in results["summary"]["statistics"].items():
-        output.append(f"  - {key}: {value}")
-    output.append("")
-    
-    # Errors
-    errors = get_penguin_errors(results)
-    if errors and errors != ["No errors found"]:
-        output.append("Errors Found:")
-        for error in errors[:5]:  # Limit to 5 errors
-            output.append(f"  - {error[:200]}...")  # Truncate long errors
-        output.append("")
-    
-    # Files collected
-    output.append(f"Files Collected: {results['summary']['files_collected']}")
-    output.append(f"Files Missing: {results['summary']['files_missing']}")
-    
-    # Key files preview
-    if results["files"].get("console.log"):
-        console_preview = results["files"]["console.log"][:500]
-        output.append(f"\nConsole Log Preview:\n{console_preview}...")
-    
-    return "\n".join(output)

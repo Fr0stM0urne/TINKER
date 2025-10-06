@@ -1,0 +1,23 @@
+# Multi-agent LangGraph System Dependencies
+
+# LangGraph & LangChain core
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain>=0.3.0
+
+# Pydantic for schemas
+pydantic>=2.0.0
+
+# Ollama Python client
+ollama>=0.3.0
+
+# Penguin module dependencies
+pyyaml>=6.0
+
+# Optional: Vector stores for RAG (to be used later)
+# faiss-cpu>=1.7.4
+# qdrant-client>=1.7.0
+
+# Optional: Embeddings (to be used later)
+# sentence-transformers>=2.2.0
+
