@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Type
 from ollama import chat, ChatResponse
 from ..schemas import Plan, State
 
@@ -50,24 +50,26 @@ Your output MUST be valid JSON matching this schema:
 
 Think carefully about dependencies between steps and ensure the plan is both comprehensive and achievable."""
 
-    def __init__(self, model: str = "llama3.3:latest"):
+    def __init__(self, model: str = "llama3.3:latest", plan_schema: Optional[Type] = None):
         """
         Initialize the Planner agent.
-        
+
         Args:
             model: Ollama model name to use for planning
+            plan_schema: Custom plan schema class to use for parsing (defaults to Plan)
         """
         self.model = model
+        self.plan_schema = plan_schema or Plan
         
-    def plan(self, state: State) -> Plan:
+    def plan(self, state: State) -> Any:
         """
         Generate or refine a plan based on the current state.
-        
+
         Args:
             state: Current system state including goal, critiques, and context
-            
+
         Returns:
-            A structured Plan object
+            A structured plan object using the custom schema
         """
         # Build context from state
         context = self._build_context(state)
@@ -149,8 +151,8 @@ Think carefully about dependencies between steps and ensure the plan is both com
         
         return response['message']['content']
     
-    def _parse_plan(self, response: str) -> Plan:
-        """Parse LLM response into a Plan object."""
+    def _parse_plan(self, response: str) -> Any:
+        """Parse LLM response into a plan object using the configured schema."""
         try:
             # Parse JSON response
             plan_data = json.loads(response)
@@ -159,8 +161,8 @@ Think carefully about dependencies between steps and ensure the plan is both com
             if "id" not in plan_data or not plan_data["id"]:
                 plan_data["id"] = f"plan_{uuid.uuid4().hex[:8]}"
             
-            # Validate and create Plan object
-            plan = Plan(**plan_data)
+            # Validate and create plan object using custom schema
+            plan = self.plan_schema(**plan_data)
             return plan
             
         except json.JSONDecodeError as e:
@@ -175,26 +177,43 @@ Think carefully about dependencies between steps and ensure the plan is both com
                     if "id" not in plan_data or not plan_data["id"]:
                         plan_data["id"] = f"plan_{uuid.uuid4().hex[:8]}"
                     
-                    return Plan(**plan_data)
+                    return self.plan_schema(**plan_data)
                 except (ValueError, json.JSONDecodeError):
                     pass
             
-            # Last resort: create a minimal plan
-            return Plan(
-                id=f"plan_{uuid.uuid4().hex[:8]}",
-                objectives=["Parse error - manual intervention needed"],
-                steps=[
-                    {
-                        "step_id": "1",
-                        "description": f"Failed to parse LLM response: {str(e)}",
-                        "action": "manual_review",
-                        "tool": "human",
-                        "params": {"raw_response": response[:500]}
-                    }
-                ],
-                acceptance_criteria={"manual_review": True},
-                revision_notes=[f"Parse error: {str(e)}"]
-            )
+            # Last resort: create a minimal plan using the schema's expected structure
+            try:
+                # Try to create with minimal required fields
+                fallback_data = {
+                    "id": f"plan_{uuid.uuid4().hex[:8]}",
+                    "objectives": ["Parse error - manual intervention needed"],
+                    "steps": [
+                        {
+                            "step_id": "1",
+                            "description": f"Failed to parse LLM response: {str(e)}",
+                            "action": "manual_review",
+                            "tool": "human",
+                            "params": {"raw_response": response[:500]}
+                        }
+                    ],
+                    "acceptance_criteria": {"manual_review": True},
+                    "revision_notes": [f"Parse error: {str(e)}"]
+                }
+
+                # Add any additional fields the schema might need
+                # For now, just try the basic structure
+                return self.plan_schema(**fallback_data)
+
+            except Exception as fallback_error:
+                # If even the fallback fails, return a very basic dict
+                return {
+                    "id": f"plan_{uuid.uuid4().hex[:8]}",
+                    "objectives": ["Parse error - manual intervention needed"],
+                    "steps": [],
+                    "acceptance_criteria": {},
+                    "revision_notes": [f"Parse error: {str(e)}"],
+                    "_parse_error": str(fallback_error)
+                }
     
     def __call__(self, state: State) -> Dict[str, Any]:
         """

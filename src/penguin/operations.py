@@ -2,9 +2,87 @@
 
 import subprocess
 import re
-from typing import Optional, Tuple
+import sys
+import threading
+from typing import Optional, Tuple, List
 from pathlib import Path
 from configparser import ConfigParser
+
+
+class OutputCapture:
+    """Capture subprocess output in real-time while displaying it."""
+
+    def __init__(self):
+        self.lines: List[str] = []
+        self.lock = threading.Lock()
+
+    def write(self, text: str) -> None:
+        """Write text to both capture buffer and stdout."""
+        with self.lock:
+            self.lines.append(text)
+
+        # Also write to stdout for real-time display
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def flush(self) -> None:
+        """Flush both capture buffer and stdout."""
+        with self.lock:
+            pass  # Lines are already captured
+        sys.stdout.flush()
+
+    def get_combined_output(self) -> str:
+        """Get all captured output as a single string."""
+        with self.lock:
+            return ''.join(self.lines)
+
+
+def _run_with_realtime_capture(cmd: List[str], description: str) -> Tuple[subprocess.CompletedProcess, str]:
+    """
+    Run command with real-time output capture.
+
+    Args:
+        cmd: Command to run as list
+        description: Description for logging
+
+    Returns:
+        Tuple of (subprocess result, combined output)
+    """
+    print(f"\n===== Running {description} =====", flush=True)
+    print(f"[cmd] {cmd}", flush=True)
+
+    # Create output capture
+    capture = OutputCapture()
+
+    try:
+        # Run with real-time output capture
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # Merge stderr into stdout
+            text=True,
+            bufsize=1,  # Line buffered
+        )
+
+        # Process output line by line to capture while displaying
+        if result.stdout:
+            for line in result.stdout.splitlines(keepends=True):
+                capture.write(line)
+
+        # Get final combined output
+        combined_output = capture.get_combined_output()
+
+        # Add to result for LLM context
+        result._merged_output = combined_output.strip()
+
+        return result, combined_output
+
+    except Exception as e:
+        error_msg = f"Error running {description}: {e}"
+        capture.write(error_msg)
+        result = subprocess.CompletedProcess(cmd, 1, stdout=error_msg)
+        result._merged_output = error_msg
+        return result, error_msg
 
 
 def _map_docker_to_host_path(docker_path: str, config: ConfigParser) -> Path:
@@ -87,32 +165,18 @@ def penguin_init(config: ConfigParser, fw: str) -> Tuple[subprocess.CompletedPro
         >>> if result.returncode == 0 and project_path:
         ...     print(f"Project created at: {project_path}")
     """
-    print(f"\n===== Running Penguin INIT =====", flush=True)
-    
     image = config.get('Penguin', 'image')
     cmd = ["penguin", "--image", image, "init", "--force", fw]
-    print(f"[cmd] {cmd}", flush=True)
-    
-    # Capture output to parse project path
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True
-    )
-    
-    # Print output for visibility
-    if result.stdout:
-        print(result.stdout, end='', flush=True)
-    if result.stderr:
-        print(result.stderr, end='', flush=True)
-    
+
+    # Run with real-time capture
+    result, combined_output = _run_with_realtime_capture(cmd, "Penguin INIT")
+
     # Parse project path from output
-    combined_output = (result.stdout or "") + (result.stderr or "")
     project_path = _parse_project_path_from_output(combined_output, config)
-    
+
     if project_path:
         print(f"[Mapped] Docker path → Host path: {project_path}", flush=True)
-    
+
     return result, project_path
 
 
@@ -135,8 +199,7 @@ def penguin_run(config: ConfigParser, penguin_proj: Path) -> subprocess.Complete
     """
     iteration_timeout = config.get('Penguin', 'iteration_timeout')
     image = config.get('Penguin', 'image')
-    
-    print(f"\n===== Running Penguin for {iteration_timeout} minutes =====", flush=True)
+
     timeout = int(iteration_timeout) * 60
     firmware_config = penguin_proj / "config.yaml"
     cmd = [
@@ -145,7 +208,9 @@ def penguin_run(config: ConfigParser, penguin_proj: Path) -> subprocess.Complete
         "run", str(firmware_config),
         "--timeout", str(timeout)
     ]
-    print(f"[cmd] {cmd}", flush=True)
-    result = subprocess.run(cmd)
+
+    # Run with real-time capture
+    result, combined_output = _run_with_realtime_capture(cmd, f"Penguin for {iteration_timeout} minutes")
+
     return result
 

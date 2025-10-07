@@ -135,13 +135,19 @@ def get_penguin_results(
             results["parsed"][filename] = None
             continue
         
-        # Read file content
+        # Read file content and strip ANSI codes for LLM consumption
         try:
             with open(file_path, 'r') as f:
                 content = f.read()
-            results["files"][filename] = content
+
+            # Strip ANSI color codes from content
+            import re
+            ansi_escape = re.compile(r'\x1b\[[0-9;]*m')
+            clean_content = ansi_escape.sub('', content)
+
+            results["files"][filename] = clean_content
             
-            # Parse if parser provided
+            # Parse if parser provided (note: parsers work on original file, but we already cleaned the content)
             if parse_func:
                 try:
                     parsed_data = parse_func(file_path)

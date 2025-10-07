@@ -1,7 +1,26 @@
 """Formatting utilities for Penguin results, optimized for LLM consumption."""
 
+import re
 from typing import Dict, Any
 from .results import get_penguin_errors
+
+
+def _strip_ansi_codes(text: str) -> str:
+    """
+    Strip ANSI color codes from text.
+
+    Args:
+        text: Text that may contain ANSI escape sequences
+
+    Returns:
+        Text with ANSI codes removed
+    """
+    if not text:
+        return text
+
+    # ANSI escape code pattern: \x1b[ followed by parameters and ending with m
+    ansi_escape = re.compile(r'\x1b\[[0-9;]*m')
+    return ansi_escape.sub('', text)
 
 
 def format_results_for_llm(results: Dict[str, Any]) -> str:
@@ -49,11 +68,12 @@ def format_results_for_llm(results: Dict[str, Any]) -> str:
     output.append(f"Files Collected: {results['summary']['files_collected']}")
     output.append(f"Files Missing: {results['summary']['files_missing']}")
     
-    # Key files preview
+    # Key files preview (strip ANSI codes)
     if results["files"].get("console.log"):
-        console_preview = results["files"]["console.log"][:500]
+        console_content = _strip_ansi_codes(results["files"]["console.log"])
+        console_preview = console_content[:500]
         output.append(f"\nConsole Log Preview:\n{console_preview}...")
-    
+
     return "\n".join(output)
 
 
@@ -104,15 +124,15 @@ def format_results_detailed(results: Dict[str, Any]) -> str:
             output.append(f"    {str(data)[:200]}...")
     output.append("")
     
-    # Full Console Log (truncated)
+    # Full Console Log (truncated, strip ANSI codes)
     if results["files"].get("console.log"):
-        console = results["files"]["console.log"]
+        console = _strip_ansi_codes(results["files"]["console.log"])
         output.append("CONSOLE LOG (first 1000 chars):")
         output.append(console[:1000])
         if len(console) > 1000:
             output.append(f"... ({len(console) - 1000} more characters)")
-    
+
     output.append("\n" + "=" * 60)
-    
+
     return "\n".join(output)
 
