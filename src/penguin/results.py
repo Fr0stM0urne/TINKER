@@ -2,6 +2,7 @@
 
 import csv
 import yaml
+import re
 from pathlib import Path
 from typing import Dict, Optional, List, Any
 from configparser import ConfigParser
@@ -112,7 +113,7 @@ def get_penguin_results(
     # List of files to collect
     file_specs = [
         # (filename, parse_function, is_critical)
-        ("console.log", None, True),
+        ("console.log", _parse_console_log, True),
         ("env_missing.yaml", _parse_yaml, False),
         ("pseudofiles_failures.yaml", _parse_yaml, False),
         ("pseudofiles_modeled.yaml", _parse_yaml, False),
@@ -227,6 +228,32 @@ def _parse_csv(file_path: Path) -> List[Dict[str, Any]]:
         return list(reader)
 
 
+
+
+def _strip_ansi_codes(text: str) -> str:
+    """
+    Strip ANSI color codes from text.
+
+    Args:
+        text: Text that may contain ANSI escape sequences
+
+    Returns:
+        Text with ANSI codes removed
+    """
+    if not text:
+        return text
+
+    # ANSI escape code pattern: \x1b[ followed by parameters and ending with m
+    ansi_escape = re.compile(r'\x1b\[[0-9;]*m')
+    return ansi_escape.sub('', text)
+
+def _parse_console_log(file_path: Path) -> str:
+    """Parse console.log file into a string."""
+    with open(file_path, 'r') as f:
+        text = f.read()
+        return _strip_ansi_codes(text)
+    
+    
 def _generate_summary(results: Dict[str, Any]) -> Dict[str, Any]:
     """Generate a summary of the results for quick analysis."""
     summary = {
