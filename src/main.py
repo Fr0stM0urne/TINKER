@@ -103,10 +103,10 @@ def main():
     # Validate firmware path exists
     if args.firmware_path == "" or not Path(args.firmware_path).exists():
         print(f"✗ Error: Firmware file not found: {args.firmware_path}")
-        print('Use default firmware path: /home/renze/workplace/TINKER/resources/firmware/stride.rootfs.tar.gz')
+        print('Use default firmware path: resources/firmware/stride.rootfs.tar.gz')
                 # get the firmware path from the config
         #debugging    
-        args.firmware_path = "/home/renze/workplace/TINKER/resources/firmware/stride.rootfs.tar.gz"
+        args.firmware_path = "resources/firmware/stride.rootfs.tar.gz"
 
         
     # Load configuration
