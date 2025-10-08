@@ -116,8 +116,8 @@ def get_penguin_results(
         ("console.log", _parse_console_log, True),
         ("env_missing.yaml", _parse_yaml, False),
         ("pseudofiles_failures.yaml", _parse_yaml, False),
-        ("pseudofiles_modeled.yaml", _parse_yaml, False),
-        ("netbinds.csv", _parse_csv, False),
+        # ("pseudofiles_modeled.yaml", _parse_yaml, False),
+        # ("netbinds.csv", _parse_csv, False),
     ]
     
     # Collect files

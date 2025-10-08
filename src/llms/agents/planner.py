@@ -128,7 +128,7 @@ Think carefully about dependencies between steps and ensure the plan is both com
         if state.plan:
             prompt_parts.append("Refine the current plan based on the feedback above. Output the complete revised plan in JSON format.")
         else:
-            prompt_parts.append("Create a comprehensive plan to achieve the user goal. Output the plan in JSON format.")
+            prompt_parts.append("Create a comprehensive plan to achieve the user goal. Output the plan in JSON format following the pre-defined schema by system.")
         
         return "\n".join(prompt_parts)
     

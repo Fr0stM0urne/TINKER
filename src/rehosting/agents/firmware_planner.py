@@ -19,46 +19,6 @@ class FirmwareConfigPlan(BaseModel):
         description="List of possible configuration update options for evaluator/engineer to prioritize"
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "id": "fw_config_plan_001",
-                "objectives": [
-                    "Fix missing environment variables",
-                    "Model failed peripheral devices"
-                ],
-                "options": [
-                    {
-                        "option_id": "1",
-                        "description": "Add missing PATH environment variable",
-                        "action": "update_config",
-                        "tool": "yaml_editor",
-                        "params": {
-                            "file": "config.yaml",
-                            "path": "hyperfiles./proc/self/environ",
-                            "value": "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-                            "reason": "env_missing.yaml indicates PATH is required"
-                        },
-                        "priority": "high",
-                        "impact": "critical"
-                    },
-                    {
-                        "option_id": "2",
-                        "description": "Model UART0 peripheral device",
-                        "action": "add_hyperfile",
-                        "tool": "peripheral_modeler",
-                        "params": {
-                            "device": "UART0",
-                            "address": "0x40001000"
-                        },
-                        "priority": "medium",
-                        "impact": "moderate"
-                    }
-                ]
-            }
-        }
-
-
 class FirmwarePlannerAgent(PlannerAgent):
     """
     Planner agent specialized for firmware rehosting configuration updates.
