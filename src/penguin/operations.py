@@ -166,7 +166,9 @@ def penguin_init(config: ConfigParser, fw: str) -> Tuple[subprocess.CompletedPro
         ...     print(f"Project created at: {project_path}")
     """
     image = config.get('Penguin', 'image')
-    cmd = ["penguin", "--image", image, "init", "--force", fw]
+    version = config.get('Penguin', 'version')
+    image_version = f"{image}:{version}"
+    cmd = ["penguin", "--image", image_version, "init", "--force", fw]
 
     # Run with real-time capture
     result, combined_output = _run_with_realtime_capture(cmd, "Penguin INIT")
@@ -199,12 +201,15 @@ def penguin_run(config: ConfigParser, penguin_proj: Path) -> subprocess.Complete
     """
     iteration_timeout = config.get('Penguin', 'iteration_timeout')
     image = config.get('Penguin', 'image')
-
+    version = config.get('Penguin', 'version')
+    image_version = f"{image}:{version}"
+    
+    
     timeout = int(iteration_timeout) * 60
     firmware_config = penguin_proj / "config.yaml"
     cmd = [
         "penguin",
-        "--image", image,
+        "--image", image_version,
         "run", str(firmware_config),
         "--timeout", str(timeout)
     ]

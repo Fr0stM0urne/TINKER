@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.rehosting.workflow import rehost_firmware
+from src.settings import set_verbose
 
 
 def parse_args():
@@ -111,6 +112,16 @@ def main():
     # Load configuration
     config = load_config(args.config)
     
+    # Set verbose mode globally (CLI flag overrides config)
+    verbose_enabled = args.verbose
+    if not verbose_enabled and config.has_option('General', 'verbose'):
+        verbose_enabled = config.getboolean('General', 'verbose', fallback=False)
+    set_verbose(verbose_enabled)
+    
+    if verbose_enabled:
+        print("🔊 Verbose mode: ENABLED")
+        print()
+    
     # Override model if specified
     if args.model:
         config.set('Ollama', 'model', args.model)
@@ -122,7 +133,7 @@ def main():
         config=config,
         firmware_path=args.firmware_path,
         output_config_path=args.output,
-        verbose=args.verbose
+        verbose=verbose_enabled
     )
     
     # Report results

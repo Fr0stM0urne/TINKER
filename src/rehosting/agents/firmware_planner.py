@@ -30,6 +30,31 @@ class FirmwarePlannerAgent(PlannerAgent):
     - Configuration sections: target, patches, hyperfiles, network
     """
     
+    # Override schema for firmware configuration plans
+    EXPECTED_RESPONSE_SCHEMA = {
+        "id": "fw_config_plan_001",
+        "objectives": [
+            "Fix missing environment variables",
+            "Model failed peripheral devices"
+        ],
+        "options": [
+            {
+                "option_id": "1",
+                "description": "Add missing PATH environment variable",
+                "action": "update_config",
+                "tool": "yaml_editor",
+                "params": {
+                    "file": "config.yaml",
+                    "path": "hyperfiles./proc/self/environ",
+                    "value": "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+                    "reason": "env_missing.yaml indicates PATH is required"
+                },
+                "priority": "high",
+                "impact": "critical"
+            }
+        ]
+    }
+    
     # Extended system prompt with firmware-specific knowledge
     SYSTEM_PROMPT = """You are a firmware rehosting planning agent specialized in Penguin configuration optimization.
 
@@ -83,35 +108,14 @@ Given rehosting results, create a plan with:
 1. Clear objectives (what needs to be fixed)
 2. List of configuration update options for prioritization
 3. Specific YAML paths and values to modify
-4. Each option should include priority and impact assessment
-
-Your output MUST be valid JSON matching this schema:
-
-```json
-{
-  "id": "fw_config_plan_001",
-  "objectives": [
-    "Fix missing environment variables",
-    "Model failed peripheral devices"
-  ],
-  "options": [
-    {
-      "option_id": "1",
-      "description": "Add missing PATH environment variable",
-      "action": "update_config",
-      "tool": "yaml_editor",
-      "params": {
-        "file": "config.yaml",
-        "path": "hyperfiles./proc/self/environ",
-        "value": "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-        "reason": "env_missing.yaml indicates PATH is required"
-      },
-      "priority": "high",
-      "impact": "critical"
-    }
-  ]
-}
-```
+4. Each option should include:
+   - option_id: Sequential identifier
+   - description: What this option does
+   - action: Type of action (update_config, add_patch, create_hyperfile)
+   - tool: Tool to use (yaml_editor, patch_manager, hyperfile_builder)
+   - params: Specific parameters including file, path, value, reason
+   - priority: critical/high/medium/low
+   - impact: Expected impact level
 
 ## Option Prioritization
 
@@ -121,11 +125,145 @@ Assign priority levels to help evaluator/engineer prioritize:
 - **medium**: Nice-to-have improvements (network config, optional peripherals)
 - **low**: Optimization or minor enhancements
 
+Your output MUST be valid JSON matching the expected schema provided.
+
 Focus on generating actionable configuration options with clear priorities."""
 
-    def __init__(self, model: str = "llama3.3:latest"):
+    RETRY_SYSTEM_PROMPT = """CRITICAL: Your previous response did NOT follow the required JSON schema format for firmware configuration plans.
+
+You MUST output ONLY valid JSON that EXACTLY matches this schema:
+{schema}
+
+REQUIREMENTS FOR FIRMWARE CONFIGURATION PLANS:
+- Output ONLY the JSON object, no explanations or markdown
+- Required fields: id, objectives, options
+- Each option MUST have: option_id, description, action, tool, params, priority, impact
+- params MUST include: file, path, value, reason
+- priority values: critical, high, medium, low
+- Do NOT wrap the JSON in markdown code blocks
+- Do NOT add any text before or after the JSON
+
+Generate the firmware configuration plan again, following the schema EXACTLY."""
+
+    def __init__(self, model: str = "llama3.3:latest", max_retries: int = 3):
         """Initialize firmware-specific planner."""
-        super().__init__(model, plan_schema=FirmwareConfigPlan)
+        super().__init__(model, plan_schema=FirmwareConfigPlan, max_retries=max_retries)
+    
+    def _parse_plan(self, response: str) -> FirmwareConfigPlan:
+        """
+        Parse LLM response into a firmware configuration plan.
+        
+        Overrides base parser to validate firmware-specific schema.
+        
+        Raises:
+            json.JSONDecodeError: If response is not valid JSON
+            ValueError: If JSON doesn't match expected schema
+            KeyError: If required fields are missing
+        """
+        import json
+        import uuid
+        
+        # First attempt: direct JSON parsing
+        try:
+            plan_data = json.loads(response)
+        except json.JSONDecodeError as e:
+            # Try to extract JSON from markdown code blocks
+            if "```json" in response or "```" in response:
+                try:
+                    json_start = response.find("```json")
+                    if json_start == -1:
+                        json_start = response.find("```")
+                    json_start = response.find("\n", json_start) + 1
+                    json_end = response.find("```", json_start)
+                    json_str = response[json_start:json_end].strip()
+                    plan_data = json.loads(json_str)
+                except (ValueError, json.JSONDecodeError) as extract_error:
+                    raise json.JSONDecodeError(
+                        f"Failed to parse JSON from response. Original error: {str(e)}, Extract error: {str(extract_error)}",
+                        response, 0
+                    )
+            else:
+                raise json.JSONDecodeError(f"Response is not valid JSON: {str(e)}", response, 0)
+        
+        # Validate required fields for firmware plans
+        required_fields = ["objectives", "options"]
+        missing_fields = [field for field in required_fields if field not in plan_data]
+        if missing_fields:
+            raise KeyError(f"Missing required fields: {', '.join(missing_fields)}")
+        
+        # Ensure we have a unique ID
+        if "id" not in plan_data or not plan_data["id"]:
+            plan_data["id"] = f"fw_plan_{uuid.uuid4().hex[:8]}"
+        
+        # Validate options structure
+        if not isinstance(plan_data["options"], list):
+            raise ValueError("'options' must be a list")
+        
+        for i, option in enumerate(plan_data["options"]):
+            if not isinstance(option, dict):
+                raise ValueError(f"Option {i} must be a dictionary")
+            option_required = ["option_id", "description", "action", "tool", "params", "priority"]
+            option_missing = [field for field in option_required if field not in option]
+            if option_missing:
+                raise KeyError(f"Option {i} missing required fields: {', '.join(option_missing)}")
+            
+            # Validate params structure
+            if not isinstance(option["params"], dict):
+                raise ValueError(f"Option {i} 'params' must be a dictionary")
+            
+            # Validate priority values
+            valid_priorities = ["critical", "high", "medium", "low"]
+            if option["priority"] not in valid_priorities:
+                raise ValueError(f"Option {i} has invalid priority '{option['priority']}'. Must be one of: {', '.join(valid_priorities)}")
+        
+        # Create plan object using firmware schema
+        try:
+            plan = self.plan_schema(**plan_data)
+            return plan
+        except Exception as e:
+            raise ValueError(f"Failed to instantiate firmware plan schema: {str(e)}")
+    
+    def _create_fallback_plan(self, error: str, response: str) -> FirmwareConfigPlan:
+        """
+        Create a fallback firmware configuration plan when all parsing attempts fail.
+        
+        Args:
+            error: The error message from the last attempt
+            response: The raw LLM response
+            
+        Returns:
+            A minimal fallback firmware plan object
+        """
+        import uuid
+        
+        fallback_data = {
+            "id": f"fw_plan_{uuid.uuid4().hex[:8]}",
+            "objectives": ["⚠️ Parse error - manual intervention needed"],
+            "options": [
+                {
+                    "option_id": "1",
+                    "description": f"Failed to parse LLM response after {self.max_retries} attempts: {error}",
+                    "action": "manual_review",
+                    "tool": "human",
+                    "params": {
+                        "raw_response": response[:500],
+                        "error": error,
+                        "file": "config.yaml",
+                        "path": "manual_review_required",
+                        "value": "see_error_details",
+                        "reason": "LLM response parsing failed"
+                    },
+                    "priority": "critical",
+                    "impact": "requires_manual_intervention"
+                }
+            ]
+        }
+        
+        try:
+            return self.plan_schema(**fallback_data)
+        except Exception:
+            # If even the fallback fails, return the dict itself
+            return fallback_data
         
     def plan(self, state: State) -> FirmwareConfigPlan:
         """

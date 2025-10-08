@@ -19,6 +19,7 @@ from rehosting.agents.firmware_planner import FirmwarePlannerAgent
 from src.penguin import PenguinClient
 from src.llms.agents import PlannerAgent
 from src.llms.schemas import State
+from src.settings import is_verbose, verbose_print
 
 
 def rehost_firmware(
@@ -140,6 +141,15 @@ def rehost_firmware(
             detailed_results,
         ]
 
+        if is_verbose():
+            verbose_print("=" * 70)
+            verbose_print("WORKFLOW: BUILDING CONTEXT FOR PLANNER", prefix="[WORKFLOW]")
+            verbose_print("=" * 70)
+            verbose_print(f"Firmware: {firmware_path}", prefix="[WORKFLOW]")
+            verbose_print(f"Project: {project_path}", prefix="[WORKFLOW]")
+            verbose_print(f"Context parts: {len(context_parts)} items", prefix="[WORKFLOW]")
+            verbose_print("=" * 70)
+
         # Create state for planner
         planner_state = State(
             goal="Analyze Penguin rehosting command outputs and results to generate configuration update plan that improves firmware execution",
@@ -148,6 +158,11 @@ def rehost_firmware(
                 "max_iterations": int(config.get('Penguin', 'max_iter', fallback=10))
             }
         )
+        
+        if is_verbose():
+            verbose_print(f"Goal: {planner_state.goal}", prefix="[WORKFLOW]")
+            verbose_print(f"Budget: max_iterations={planner_state.budget.get('max_iterations')}", prefix="[WORKFLOW]")
+            verbose_print("=" * 70)
         
         # Get plan from planner
         updated_state = planner(planner_state)
@@ -158,6 +173,20 @@ def rehost_firmware(
             print(f"  ✓ Config update plan generated (Plan ID: {config_plan.id})")
             print(f"    Objectives: {len(config_plan.objectives)}")
             print(f"    Options: {len(config_plan.options)}")
+            
+            if is_verbose():
+                verbose_print("=" * 70)
+                verbose_print("WORKFLOW: PLAN GENERATED SUCCESSFULLY", prefix="[WORKFLOW]")
+                verbose_print("=" * 70)
+                verbose_print(f"Plan ID: {config_plan.id}", prefix="[WORKFLOW]")
+                verbose_print(f"Objectives ({len(config_plan.objectives)}):", prefix="[WORKFLOW]")
+                for i, obj in enumerate(config_plan.objectives, 1):
+                    verbose_print(f"  {i}. {obj}", prefix="[WORKFLOW]")
+                verbose_print(f"\nOptions ({len(config_plan.options)}):", prefix="[WORKFLOW]")
+                for i, opt in enumerate(config_plan.options, 1):
+                    opt_dict = opt if isinstance(opt, dict) else opt.dict() if hasattr(opt, 'dict') else {}
+                    verbose_print(f"  {i}. [{opt_dict.get('priority', 'N/A')}] {opt_dict.get('description', 'N/A')}", prefix="[WORKFLOW]")
+                verbose_print("=" * 70)
         else:
             workflow_state["errors"].append("Planner failed to generate plan")
             return workflow_state
