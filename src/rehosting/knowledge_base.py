@@ -104,11 +104,79 @@ class KnowledgeBase:
         """
         Initialize knowledge base.
         
+        Always loads built-in knowledge, then merges with external KB if provided.
+        
         Args:
-            kb_path: Path to external knowledge base file (optional)
+            kb_path: Path to external KB file or directory containing JSON files
         """
         self.kb_path = kb_path
-        # In real implementation, load from file or vector DB
+        
+        # Start with built-in knowledge (always available)
+        self.issues = dict(self.COMMON_ISSUES)
+        
+        # Load and merge external KB if path provided
+        if kb_path:
+            self._load_external_kb(kb_path)
+    
+    def _load_external_kb(self, kb_path: Path):
+        """
+        Load external knowledge base from file or directory.
+        
+        Args:
+            kb_path: Path to JSON file or directory with JSON files
+        """
+        import json
+        
+        try:
+            if kb_path.is_file():
+                # Load single JSON file
+                self._load_kb_file(kb_path)
+            elif kb_path.is_dir():
+                # Load all JSON files from directory
+                json_files = list(kb_path.glob("*.json"))
+                for json_file in json_files:
+                    self._load_kb_file(json_file)
+                print(f"[KB] Loaded {len(json_files)} external KB files from {kb_path}")
+            else:
+                print(f"[KB] Warning: Path not found: {kb_path}")
+        except Exception as e:
+            print(f"[KB] Error loading external KB: {e}")
+    
+    def _load_kb_file(self, file_path: Path):
+        """
+        Load a single KB JSON file and merge with existing issues.
+        
+        Expected JSON format:
+        {
+          "issue_id": {
+            "title": "...",
+            "severity": "...",
+            "symptoms": [...],
+            "solutions": {...}
+          },
+          ...
+        }
+        
+        Args:
+            file_path: Path to JSON file
+        """
+        import json
+        
+        try:
+            with open(file_path, 'r') as f:
+                external_issues = json.load(f)
+            
+            # Merge with existing issues
+            for issue_id, issue_data in external_issues.items():
+                if issue_id in self.issues:
+                    print(f"[KB] Warning: Overriding built-in issue '{issue_id}' with external definition from {file_path.name}")
+                self.issues[issue_id] = issue_data
+            
+            print(f"[KB] Loaded {len(external_issues)} issues from {file_path.name}")
+        except json.JSONDecodeError as e:
+            print(f"[KB] Error parsing JSON in {file_path}: {e}")
+        except Exception as e:
+            print(f"[KB] Error loading {file_path}: {e}")
     
     def detect_case(self, results_data: Dict[str, Any]) -> Optional[str]:
         """
@@ -144,7 +212,7 @@ class KnowledgeBase:
         """
         results = []
         
-        for issue_id, issue_data in self.COMMON_ISSUES.items():
+        for issue_id, issue_data in self.issues.items():
             # Check if symptoms match
             if self._symptoms_match(symptoms, issue_data["symptoms"]):
                 planner_info = issue_data["solutions"]["planner_view"]
@@ -173,12 +241,12 @@ class KnowledgeBase:
         results = []
         
         # If issue_id provided, get specific examples
-        if issue_id and issue_id in self.COMMON_ISSUES:
-            engineer_view = self.COMMON_ISSUES[issue_id]["solutions"]["engineer_view"]
+        if issue_id and issue_id in self.issues:
+            engineer_view = self.issues[issue_id]["solutions"]["engineer_view"]
             return engineer_view.get("examples", [])
         
         # Otherwise, search based on objective keywords
-        for issue_id, issue_data in self.COMMON_ISSUES.items():
+        for issue_id, issue_data in self.issues.items():
             if self._objective_matches(objective, issue_data):
                 engineer_view = issue_data["solutions"]["engineer_view"]
                 results.extend(engineer_view.get("examples", []))
@@ -212,11 +280,24 @@ class KnowledgeBase:
     
     def get_all_issues(self) -> List[str]:
         """Get list of all known issue IDs."""
-        return list(self.COMMON_ISSUES.keys())
+        return list(self.issues.keys())
     
     def get_issue_details(self, issue_id: str) -> Optional[Dict[str, Any]]:
         """Get complete details for a specific issue."""
-        return self.COMMON_ISSUES.get(issue_id)
+        return self.issues.get(issue_id)
+    
+    def get_kb_stats(self) -> Dict[str, Any]:
+        """Get statistics about the loaded knowledge base."""
+        built_in_count = len(self.COMMON_ISSUES)
+        total_count = len(self.issues)
+        external_count = total_count - built_in_count
+        
+        return {
+            "total_issues": total_count,
+            "built_in": built_in_count,
+            "external": external_count,
+            "kb_path": str(self.kb_path) if self.kb_path else None
+        }
 
 
 # Global instance (can be configured per workflow)
