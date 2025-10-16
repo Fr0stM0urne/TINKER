@@ -1,6 +1,11 @@
-"""Firmware rehosting specific agents."""
+"""Agents for firmware rehosting workflow."""
 
 from .firmware_planner import FirmwarePlannerAgent, create_firmware_planner
+from .engineer import EngineerAgent, create_engineer
 
-__all__ = ["FirmwarePlannerAgent", "create_firmware_planner"]
-
+__all__ = [
+    "FirmwarePlannerAgent",
+    "create_firmware_planner",
+    "EngineerAgent",
+    "create_engineer"
+]

@@ -153,6 +153,17 @@ def main():
             print(f"  🎯 Objectives: {len(plan.objectives)}")
             print(f"  📍 Options: {len(plan.options)}")
         
+        if result.get("actions"):
+            actions = result["actions"]
+            print(f"  ⚙️  Actions executed: {len(actions)}")
+        
+        if result.get("engineer_summary"):
+            summary = result["engineer_summary"]
+            successful = sum(1 for s in summary if s.get("status") == "success")
+            failed = sum(1 for s in summary if s.get("status") == "failed")
+            print(f"  ✅ Successful: {successful}")
+            print(f"  ❌ Failed: {failed}")
+        
         if result.get("updated_config_path"):
             print(f"  💾 Updated config: {result['updated_config_path']}")
         

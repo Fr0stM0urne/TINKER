@@ -4,10 +4,15 @@ Extended Planner agent specialized for firmware rehosting configuration.
 This extends the base PlannerAgent with firmware-specific knowledge and prompts.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
-from src.llms.agents import PlannerAgent
-from src.llms.schemas import State
+from pathlib import Path
+from src.rehosting.schemas import State
+from src.rehosting.knowledge_base import KnowledgeBase, get_knowledge_base
+import json
+import uuid
+from ollama import chat, ChatResponse
+from src.settings import is_verbose, verbose_print
 
 
 class FirmwareConfigPlan(BaseModel):
@@ -19,7 +24,7 @@ class FirmwareConfigPlan(BaseModel):
         description="List of possible configuration update options for evaluator/engineer to prioritize"
     )
 
-class FirmwarePlannerAgent(PlannerAgent):
+class FirmwarePlannerAgent:
     """
     Planner agent specialized for firmware rehosting configuration updates.
     
@@ -145,9 +150,50 @@ REQUIREMENTS FOR FIRMWARE CONFIGURATION PLANS:
 
 Generate the firmware configuration plan again, following the schema EXACTLY."""
 
-    def __init__(self, model: str = "llama3.3:latest", max_retries: int = 3):
+    def __init__(self, model: str = "llama3.3:latest", max_retries: int = 3, kb_path: Optional[Path] = None):
         """Initialize firmware-specific planner."""
-        super().__init__(model, plan_schema=FirmwareConfigPlan, max_retries=max_retries)
+        self.model = model
+        self.plan_schema = FirmwareConfigPlan
+        self.max_retries = max_retries
+        self.kb = get_knowledge_base(kb_path)
+    
+    def plan(self, state: State) -> FirmwareConfigPlan:
+        """Generate firmware configuration update plan."""
+        context = self._build_context(state)
+        user_prompt = self._build_prompt(state, context)
+        
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                is_retry = attempt > 0
+                response = self._call_llm(user_prompt, is_retry=is_retry, previous_error=last_error)
+                plan = self._parse_plan(response)
+                
+                if attempt > 0:
+                    print(f"[Planner] Successfully generated plan on retry attempt {attempt + 1}")
+                
+                if is_verbose():
+                    verbose_print("=" * 70)
+                    verbose_print("GENERATED PLAN (PARSED)", prefix="[PLANNER]")
+                    verbose_print("=" * 70)
+                    verbose_print(f"Plan ID: {plan.id}", prefix="[PLANNER]")
+                    if hasattr(plan, 'model_dump'):
+                        verbose_print(json.dumps(plan.model_dump(), indent=2))
+                    else:
+                        verbose_print(str(plan))
+                    verbose_print("=" * 70)
+                
+                return plan
+                
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                last_error = str(e)
+                print(f"[Planner] Attempt {attempt + 1}/{self.max_retries} failed: {last_error}")
+                
+                if attempt == self.max_retries - 1:
+                    print(f"[Planner] All {self.max_retries} attempts failed. Creating fallback plan.")
+                    return self._create_fallback_plan(last_error, response if 'response' in locals() else "No response")
+        
+        return self._create_fallback_plan("Unknown error", "No response")
     
     def _parse_plan(self, response: str) -> FirmwareConfigPlan:
         """
@@ -223,6 +269,147 @@ Generate the firmware configuration plan again, following the schema EXACTLY."""
         except Exception as e:
             raise ValueError(f"Failed to instantiate firmware plan schema: {str(e)}")
     
+    def _build_context(self, state: State) -> str:
+        """Build contextual information from state, enriched with KB insights."""
+        context_parts = []
+        
+        if state.rag_context:
+            context_parts.append("## Retrieved Context:")
+            context_parts.extend(state.rag_context)
+        
+        # Query Knowledge Base for strategic insights (if enabled)
+        symptoms = self._extract_symptoms(state.rag_context)
+        if symptoms and self.kb is not None:
+            kb_insights = self.kb.query_for_planner(symptoms)
+            
+            if kb_insights:
+                context_parts.append("\n## Knowledge Base Insights:")
+                for insight in kb_insights:
+                    context_parts.append(f"- Issue: {insight['issue']}")
+                    context_parts.append(f"  Severity: {insight['severity']}")
+                    context_parts.append(f"  Priority: {insight['priority']}")
+                    context_parts.append(f"  Impact: {insight['impact']}")
+                    context_parts.append(f"  Description: {insight['description']}")
+                    
+                    # Add specific guidance from KB
+                    issue_details = self.kb.get_issue_details(insight['issue_id'])
+                    if issue_details:
+                        planner_view = issue_details['solutions']['planner_view']
+                        if planner_view.get('requires_rerun'):
+                            context_parts.append(f"  ⚠️  Requires iteration: {planner_view.get('next_steps', 'Re-run needed')}")
+                        if planner_view.get('selection_criteria'):
+                            context_parts.append(f"  Selection: {planner_view['selection_criteria']}")
+                    context_parts.append("")
+                
+                if is_verbose():
+                    verbose_print(f"[PLANNER] KB returned {len(kb_insights)} insights", prefix="[KB]")
+        
+        context = "\n".join(context_parts) if context_parts else "No additional context available."
+        
+        if is_verbose():
+            verbose_print("=" * 70)
+            verbose_print("CONTEXT BUILT FOR LLM (with KB)", prefix="[PLANNER]")
+            verbose_print("=" * 70)
+            verbose_print(f"\n{context}\n")
+            verbose_print("=" * 70)
+        
+        return context
+    
+    def _extract_symptoms(self, rag_context: List[str]) -> List[str]:
+        """Extract symptoms from RAG context for KB querying."""
+        symptoms = []
+        
+        for ctx in rag_context:
+            ctx_lower = ctx.lower()
+            
+            # Look for common symptom patterns
+            if "env_missing" in ctx_lower or "environment variable" in ctx_lower:
+                symptoms.append("env_missing.yaml shows unknown variable")
+            
+            if "env_cmp" in ctx_lower:
+                symptoms.append("env_cmp.txt contains candidate values")
+            
+            if "no configuration" in ctx_lower or "missing configuration" in ctx_lower:
+                symptoms.append("Console errors about missing configuration")
+            
+            if "/dev/" in ctx_lower and ("not found" in ctx_lower or "no such" in ctx_lower):
+                symptoms.append("/dev/* file not found")
+            
+            if "pseudofiles_failures" in ctx_lower:
+                symptoms.append("pseudofiles_failures.yaml shows device failures")
+        
+        return symptoms
+    
+    def _build_prompt(self, state: State, context: str) -> str:
+        """Construct the full planning prompt."""
+        prompt_parts = [
+            f"## User Goal:\n{state.goal}",
+            f"\n## Context:\n{context}",
+        ]
+        
+        if state.budget:
+            prompt_parts.append(f"\n## Constraints:\n{json.dumps(state.budget, indent=2)}")
+        
+        prompt_parts.append("\n## Task:")
+        prompt_parts.append("Create a comprehensive plan to achieve the user goal. Output the plan in JSON format following the pre-defined schema by system.")
+        
+        return "\n".join(prompt_parts)
+    
+    def _call_llm(self, user_prompt: str, is_retry: bool = False, previous_error: Optional[str] = None) -> str:
+        """Call Ollama LLM to generate the plan."""
+        if is_retry:
+            schema_str = json.dumps(self.EXPECTED_RESPONSE_SCHEMA, indent=2)
+            system_prompt = self.RETRY_SYSTEM_PROMPT.format(schema=schema_str)
+            retry_user_prompt = f"""Previous attempt failed with error: {previous_error}
+
+{user_prompt}
+
+REMEMBER: Output ONLY valid JSON matching the exact schema. No markdown, no explanations."""
+            user_prompt = retry_user_prompt
+        else:
+            schema_str = json.dumps(self.EXPECTED_RESPONSE_SCHEMA, indent=2)
+            system_prompt = f"""{self.SYSTEM_PROMPT}
+
+Expected JSON Schema:
+{schema_str}"""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        if is_verbose():
+            verbose_print("=" * 70)
+            verbose_print(f"CALLING LLM (Retry: {is_retry})", prefix="[PLANNER]")
+            verbose_print("=" * 70)
+            verbose_print(f"Model: {self.model}", prefix="[PLANNER]")
+            verbose_print("\n--- SYSTEM PROMPT ---")
+            verbose_print(system_prompt)
+            verbose_print("\n--- USER PROMPT ---")
+            verbose_print(user_prompt)
+            verbose_print("=" * 70)
+        
+        response: ChatResponse = chat(
+            model=self.model,
+            messages=messages,
+            format="json",
+            options={
+                "temperature": 0.3 if is_retry else 0.7,
+                "num_predict": 2048,
+            }
+        )
+        
+        llm_response = response['message']['content']
+        
+        if is_verbose():
+            verbose_print("=" * 70)
+            verbose_print("LLM RESPONSE RECEIVED", prefix="[PLANNER]")
+            verbose_print("=" * 70)
+            verbose_print(llm_response)
+            verbose_print("=" * 70)
+        
+        return llm_response
+    
     def _create_fallback_plan(self, error: str, response: str) -> FirmwareConfigPlan:
         """
         Create a fallback firmware configuration plan when all parsing attempts fail.
@@ -264,156 +451,14 @@ Generate the firmware configuration plan again, following the schema EXACTLY."""
         except Exception:
             # If even the fallback fails, return the dict itself
             return fallback_data
-        
-    def plan(self, state: State) -> FirmwareConfigPlan:
-        """
-        Generate firmware configuration update plan.
-        
-        This extends the base planner with firmware-specific context building.
-        """
-        # TODO: Add firmware-specific context enhancement
-        # - Parse Penguin results structure
-        # - Extract specific errors/failures
-        # - Identify configuration gaps
-        # - Prioritize issues by impact
-        
-        # For now, use base planner logic
-        return super().plan(state)
     
-    def _build_context(self, state: State) -> str:
-        """
-        Build enhanced context with firmware-specific analysis.
-        
-        Extensions to add:
-        1. Parse env_missing.yaml and list missing vars
-        2. Parse pseudofiles_failures.yaml and list failed peripherals  
-        3. Extract error patterns from console.log
-        4. Identify network binding issues from netbinds.csv
-        5. Suggest architecture-specific fixes
-        """
-        # Get base context
-        base_context = super()._build_context(state)
-        
-        # TODO: Add firmware-specific context parsing
-        # Example structure:
-        """
-        firmware_context = []
-        
-        # Parse RAG context for Penguin results
-        for ctx in state.rag_context:
-            if "env_missing_count:" in ctx:
-                # Extract and analyze missing env vars
-                firmware_context.append("Missing environment variables detected")
-                firmware_context.append("Action: Add to hyperfiles or inject via patches")
-                
-            if "pseudofile_failures:" in ctx:
-                # Extract peripheral failures
-                firmware_context.append("Peripheral modeling failures detected")
-                firmware_context.append("Action: Create hyperfile models for devices")
-                
-            if "Console errors:" in ctx:
-                # Extract crash patterns
-                firmware_context.append("Execution errors detected")
-                firmware_context.append("Action: Review entry point and memory mappings")
-        
-        if firmware_context:
-            base_context += "\n\n## Firmware-Specific Analysis:\n"
-            base_context += "\n".join(firmware_context)
-        """
-        
-        return base_context
-    
-    def _build_prompt(self, state: State, context: str) -> str:
-        """
-        Build planning prompt with firmware configuration focus.
-        
-        Extensions to add:
-        1. Include current Penguin config (if available)
-        2. Highlight specific sections that need updates
-        3. Provide examples of successful configurations
-        4. Add architecture-specific hints
-        """
-        base_prompt = super()._build_prompt(state, context)
-        
-        # TODO: Enhance with firmware-specific guidance
-        """
-        firmware_guidance = '''
-        
-## Additional Context for Configuration Updates
-
-Current Penguin Configuration Sections to Review:
-- target.arch: Verify architecture is correct
-- target.entry_point: Check if entry point is valid
-- patches: Consider enabling root_shell, auto_explore
-- hyperfiles: Add models for missing files/devices
-- network: Update bindings for detected services
-
-Prioritize fixes in this order:
-1. Critical: Entry point, architecture, memory regions
-2. High: Missing environment variables, core peripherals
-3. Medium: Network configuration, optional peripherals
-4. Low: Performance optimizations, logging
-'''
-        base_prompt += firmware_guidance
-        """
-        
-        return base_prompt
-    
-    def _suggest_config_updates(self, results: Dict[str, Any]) -> list:
-        """
-        Analyze results and suggest specific config updates.
-        
-        This would be a key method to implement:
-        1. Parse all result files
-        2. Identify root causes of failures
-        3. Map failures to config changes
-        4. Generate ordered update steps
-        
-        Returns:
-            List of suggested configuration modifications
-        """
-        # TODO: Implement intelligent config analysis
-        suggestions = []
-        
-        # Example logic (to be implemented):
-        """
-        # Check for missing env vars
-        if results.get("parsed", {}).get("env_missing.yaml"):
-            for var, value in results["parsed"]["env_missing.yaml"].items():
-                suggestions.append({
-                    "type": "hyperfile",
-                    "path": "/proc/self/environ",
-                    "action": "append",
-                    "value": f"{var}={value}",
-                    "priority": "high"
-                })
-        
-        # Check for peripheral failures
-        if results.get("parsed", {}).get("pseudofiles_failures.yaml"):
-            for device in results["parsed"]["pseudofiles_failures.yaml"]:
-                suggestions.append({
-                    "type": "hyperfile",
-                    "path": device,
-                    "action": "create_model",
-                    "priority": "medium"
-                })
-        
-        # Check console for crashes
-        console = results.get("files", {}).get("console.log", "")
-        if "segmentation fault" in console.lower():
-            suggestions.append({
-                "type": "patch",
-                "patch": "lib_inject",
-                "action": "enable",
-                "priority": "critical"
-            })
-        """
-        
-        return suggestions
-
+    def __call__(self, state: State) -> Dict[str, Any]:
+        """LangGraph node interface - callable that updates state."""
+        plan = self.plan(state)
+        return {"plan": plan}
 
 # Convenience function for workflow integration
-def create_firmware_planner(model: str = "llama3.3:latest") -> FirmwarePlannerAgent:
+def create_firmware_planner(model: str = "llama3.3:latest", kb_path: Optional[Path] = None) -> FirmwarePlannerAgent:
     """Create a firmware-specific planner instance."""
-    return FirmwarePlannerAgent(model)
+    return FirmwarePlannerAgent(model, kb_path=kb_path)
 

@@ -13,16 +13,4 @@ class ActionRecord(BaseModel):
     output_uri: str = Field(description="Reference to the output (file path, ID, etc.)")
     summary: str = Field(description="Human-readable summary of what was done")
     status: str = Field(description="Execution status: success, partial, failed")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "step_id": "1",
-                "tool": "binary_loader",
-                "input": {"path": "/path/to/firmware.bin"},
-                "output_uri": "mem://loaded_binary_001",
-                "summary": "Successfully loaded ARM firmware binary (2.3 MB)",
-                "status": "success"
-            }
-        }
 

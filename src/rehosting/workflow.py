@@ -16,9 +16,9 @@ if str(Path(__file__).parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from rehosting.agents.firmware_planner import FirmwarePlannerAgent
+from rehosting.graph import create_rehosting_workflow
 from src.penguin import PenguinClient
-from src.llms.agents import PlannerAgent
-from src.llms.schemas import State
+from src.rehosting.schemas import State
 from src.settings import is_verbose, verbose_print
 
 
@@ -107,8 +107,8 @@ def rehost_firmware(
         return workflow_state
     print()
     
-    # Step 4: Feed results to planner for config update plan
-    print("🧠 Step 4: Generating config update plan with LLM planner...")
+    # Step 4: Run multi-agent workflow (Planner + Engineer)
+    print("🤖 Step 4: Running multi-agent workflow (Planner → Engineer)...")
     try:
         # Get comprehensive formatted results from penguin client
         detailed_results = penguin_client.format_detailed(results)
@@ -143,74 +143,79 @@ def rehost_firmware(
 
         if is_verbose():
             verbose_print("=" * 70)
-            verbose_print("WORKFLOW: BUILDING CONTEXT FOR PLANNER", prefix="[WORKFLOW]")
+            verbose_print("WORKFLOW: BUILDING CONTEXT FOR MULTI-AGENT SYSTEM", prefix="[WORKFLOW]")
             verbose_print("=" * 70)
             verbose_print(f"Firmware: {firmware_path}", prefix="[WORKFLOW]")
             verbose_print(f"Project: {project_path}", prefix="[WORKFLOW]")
             verbose_print(f"Context parts: {len(context_parts)} items", prefix="[WORKFLOW]")
             verbose_print("=" * 70)
 
-        # Create state for planner
-        planner_state = State(
-            goal="Analyze Penguin rehosting command outputs and results to generate configuration update plan that improves firmware execution",
-            rag_context=context_parts,
-            budget={
-                "max_iterations": int(config.get('Penguin', 'max_iter', fallback=10))
-            }
+        # Create and run the multi-agent workflow
+        workflow = create_rehosting_workflow(
+            config=config,
+            project_path=project_path,
+            verbose=verbose
         )
         
-        if is_verbose():
-            verbose_print(f"Goal: {planner_state.goal}", prefix="[WORKFLOW]")
-            verbose_print(f"Budget: max_iterations={planner_state.budget.get('max_iterations')}", prefix="[WORKFLOW]")
-            verbose_print("=" * 70)
+        final_state = workflow.run(
+            firmware_path=firmware_path,
+            rag_context=context_parts,
+            goal="Analyze Penguin rehosting results and generate configuration update plan that improves firmware execution"
+        )
         
-        # Get plan from planner
-        updated_state = planner(planner_state)
-        config_plan = updated_state.get("plan")
+        # Extract results from final state
+        config_plan = final_state.get("plan")
+        actions = final_state.get("actions", [])
+        engineer_summary = final_state.get("engineer_summary", [])
 
         if config_plan:
             workflow_state["config_update_plan"] = config_plan
-            print(f"  ✓ Config update plan generated (Plan ID: {config_plan.id})")
+            workflow_state["actions"] = actions
+            workflow_state["engineer_summary"] = engineer_summary
+            
+            print(f"  ✓ Multi-agent workflow completed")
+            print(f"    Plan ID: {config_plan.id}")
             print(f"    Objectives: {len(config_plan.objectives)}")
-            print(f"    Options: {len(config_plan.options)}")
+            print(f"    Options executed: {len(config_plan.options)}")
+            print(f"    Actions completed: {len(actions)}")
             
             if is_verbose():
                 verbose_print("=" * 70)
-                verbose_print("WORKFLOW: PLAN GENERATED SUCCESSFULLY", prefix="[WORKFLOW]")
+                verbose_print("WORKFLOW: MULTI-AGENT EXECUTION COMPLETE", prefix="[WORKFLOW]")
                 verbose_print("=" * 70)
                 verbose_print(f"Plan ID: {config_plan.id}", prefix="[WORKFLOW]")
-                verbose_print(f"Objectives ({len(config_plan.objectives)}):", prefix="[WORKFLOW]")
-                for i, obj in enumerate(config_plan.objectives, 1):
-                    verbose_print(f"  {i}. {obj}", prefix="[WORKFLOW]")
-                verbose_print(f"\nOptions ({len(config_plan.options)}):", prefix="[WORKFLOW]")
-                for i, opt in enumerate(config_plan.options, 1):
-                    opt_dict = opt if isinstance(opt, dict) else opt.dict() if hasattr(opt, 'dict') else {}
-                    verbose_print(f"  {i}. [{opt_dict.get('priority', 'N/A')}] {opt_dict.get('description', 'N/A')}", prefix="[WORKFLOW]")
+                verbose_print(f"Total actions: {len(actions)}", prefix="[WORKFLOW]")
+                verbose_print(f"Execution done: {final_state.get('done', False)}", prefix="[WORKFLOW]")
                 verbose_print("=" * 70)
         else:
-            workflow_state["errors"].append("Planner failed to generate plan")
+            workflow_state["errors"].append("Multi-agent workflow failed to generate plan")
             return workflow_state
             
     except Exception as e:
-        workflow_state["errors"].append(f"Planning failed: {e}")
+        workflow_state["errors"].append(f"Multi-agent workflow failed: {e}")
         import traceback
         traceback.print_exc()
         return workflow_state
     print()
     
-    # TODO: Step 5: Execute config updates (Engineer agent)
-    # TODO: Step 6: Validate with Evaluator
-    # TODO: Step 7: Iterate until success
+    # TODO: Step 5: Validate with Evaluator (future enhancement)
+    # TODO: Step 6: Run Penguin again to verify improvements (future enhancement)
+    # TODO: Step 7: Iterate until success (future enhancement)
     
     print("=" * 70)
-    print("✨ Workflow Phase 1 Complete")
+    print("✨ Multi-Agent Workflow Complete")
     print("=" * 70)
     print()
-    print("Generated Plan Summary:")
+    print("Plan Summary:")
     print(f"  ID: {config_plan.id}")
     print(f"  Objectives:")
     for i, obj in enumerate(config_plan.objectives, 1):
         print(f"    {i}. {obj}")
+    print()
+    print("Execution Summary:")
+    for summary_item in engineer_summary:
+        status_icon = "✅" if summary_item.get("status") == "success" else "❌"
+        print(f"  {status_icon} {summary_item.get('description', 'N/A')}")
     print()
     
     workflow_state["success"] = True
