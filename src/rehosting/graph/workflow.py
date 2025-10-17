@@ -101,8 +101,16 @@ class RehostingWorkflow:
             if is_verbose():
                 verbose_print("Knowledge Base: DISABLED", prefix="[WORKFLOW]")
         
+        # Get engineer configuration
+        max_options = config.getint('Engineer', 'max_options', fallback=3) if config.has_section('Engineer') else 3
+        
         self.planner = FirmwarePlannerAgent(model=model, kb_path=kb_path if kb_enabled else None)
-        self.engineer = EngineerAgent(project_path=project_path, model=model, kb_path=kb_path if kb_enabled else None)
+        self.engineer = EngineerAgent(
+            project_path=project_path, 
+            model=model, 
+            kb_path=kb_path if kb_enabled else None,
+            max_options=max_options
+        )
         
         # Build the graph
         self.graph = self._build_graph()

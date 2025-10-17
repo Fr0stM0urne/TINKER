@@ -1,435 +1,689 @@
 """
-Tools for updating Penguin configuration files.
+Configuration tools for Penguin rehosting.
 
-These tools allow the Engineer agent to modify YAML config files
-based on the plan provided by the Planner.
+This module provides tools for updating Penguin YAML configuration files
+following the JSON tool format for better parameter handling.
 """
 
-import yaml
+try:
+    import yaml
+except ImportError:
+    from ruamel import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional, List
-from pydantic import BaseModel, Field
+from typing import Dict, Any, List, Optional, Union
+from dataclasses import dataclass
+import subprocess
+import tempfile
+import shutil
+import difflib
+import json
 
 
-class ConfigUpdateResult(BaseModel):
-    """Result of a configuration update operation."""
-    
-    success: bool = Field(description="Whether the update was successful")
-    message: str = Field(description="Human-readable message about the operation")
-    file_path: str = Field(description="Path to the modified file")
-    changes: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Summary of changes made"
-    )
-
-
-class YAMLConfigEditor:
-    """
-    Tool for editing YAML configuration files.
-    
-    Supports:
-    - Updating nested values using dot notation paths
-    - Adding new entries to lists
-    - Creating new sections
-    - Validating changes before writing
-    """
-    
-    def __init__(self, config_base_path: Optional[Path] = None):
-        """
-        Initialize the YAML editor.
-        
-        Args:
-            config_base_path: Base directory for config files (defaults to current working dir)
-        """
-        self.config_base_path = config_base_path or Path.cwd()
-    
-    def update_value(
-        self,
-        file_path: str,
-        yaml_path: str,
-        value: Any,
-        reason: str = ""
-    ) -> ConfigUpdateResult:
-        """
-        Update a value in a YAML file using dot notation path.
-        
-        Args:
-            file_path: Path to YAML file (relative to config_base_path)
-            yaml_path: Dot-separated path to the value (e.g., "core.root_shell" or "env.PATH")
-            value: New value to set
-            reason: Explanation for why this change is needed
-            
-        Returns:
-            ConfigUpdateResult with operation details
-            
-        Examples:
-            >>> editor.update_value("config.yaml", "core.root_shell", True, "Enable shell access")
-            >>> editor.update_value("config.yaml", "env.PATH", "/usr/bin:/bin", "Add PATH env var")
-        """
-        full_path = self.config_base_path / file_path
-        
-        try:
-            # Load existing config
-            if full_path.exists():
-                with open(full_path, 'r') as f:
-                    config = yaml.safe_load(f) or {}
-            else:
-                return ConfigUpdateResult(
-                    success=False,
-                    message=f"Config file not found: {full_path}",
-                    file_path=str(full_path),
-                    changes={}
-                )
-            
-            # Navigate to the target location
-            path_parts = yaml_path.split('.')
-            target = config
-            
-            # Navigate to parent
-            for part in path_parts[:-1]:
-                if part not in target:
-                    target[part] = {}
-                target = target[part]
-            
-            # Get old value for change tracking
-            old_value = target.get(path_parts[-1], None)
-            
-            # Set new value
-            target[path_parts[-1]] = value
-            
-            # Write back to file
-            with open(full_path, 'w') as f:
-                yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
-            
-            return ConfigUpdateResult(
-                success=True,
-                message=f"Updated {yaml_path} in {file_path}. Reason: {reason}",
-                file_path=str(full_path),
-                changes={
-                    "path": yaml_path,
-                    "old_value": old_value,
-                    "new_value": value,
-                    "reason": reason
-                }
-            )
-            
-        except Exception as e:
-            return ConfigUpdateResult(
-                success=False,
-                message=f"Failed to update {yaml_path}: {str(e)}",
-                file_path=str(full_path),
-                changes={}
-            )
-    
-    def add_to_list(
-        self,
-        file_path: str,
-        yaml_path: str,
-        value: Any,
-        reason: str = "",
-        unique: bool = True
-    ) -> ConfigUpdateResult:
-        """
-        Add a value to a list in the YAML file.
-        
-        Args:
-            file_path: Path to YAML file
-            yaml_path: Dot-separated path to the list
-            value: Value to add to the list
-            reason: Explanation for the change
-            unique: Only add if value doesn't already exist
-            
-        Returns:
-            ConfigUpdateResult with operation details
-            
-        Examples:
-            >>> editor.add_to_list("config.yaml", "patches", "static_patches/new_patch.yaml", "Add new patch")
-        """
-        full_path = self.config_base_path / file_path
-        
-        try:
-            # Load existing config
-            if full_path.exists():
-                with open(full_path, 'r') as f:
-                    config = yaml.safe_load(f) or {}
-            else:
-                return ConfigUpdateResult(
-                    success=False,
-                    message=f"Config file not found: {full_path}",
-                    file_path=str(full_path),
-                    changes={}
-                )
-            
-            # Navigate to the target list
-            path_parts = yaml_path.split('.')
-            target = config
-            
-            for part in path_parts[:-1]:
-                if part not in target:
-                    target[part] = {}
-                target = target[part]
-            
-            # Ensure target is a list
-            list_key = path_parts[-1]
-            if list_key not in target:
-                target[list_key] = []
-            elif not isinstance(target[list_key], list):
-                return ConfigUpdateResult(
-                    success=False,
-                    message=f"{yaml_path} is not a list",
-                    file_path=str(full_path),
-                    changes={}
-                )
-            
-            # Add value to list
-            if unique and value in target[list_key]:
-                return ConfigUpdateResult(
-                    success=True,
-                    message=f"Value already exists in {yaml_path}, skipped. Reason: {reason}",
-                    file_path=str(full_path),
-                    changes={"path": yaml_path, "action": "skipped", "value": value}
-                )
-            
-            target[list_key].append(value)
-            
-            # Write back to file
-            with open(full_path, 'w') as f:
-                yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
-            
-            return ConfigUpdateResult(
-                success=True,
-                message=f"Added value to {yaml_path} in {file_path}. Reason: {reason}",
-                file_path=str(full_path),
-                changes={
-                    "path": yaml_path,
-                    "action": "added",
-                    "value": value,
-                    "reason": reason
-                }
-            )
-            
-        except Exception as e:
-            return ConfigUpdateResult(
-                success=False,
-                message=f"Failed to add to list {yaml_path}: {str(e)}",
-                file_path=str(full_path),
-                changes={}
-            )
-    
-    def create_hyperfile(
-        self,
-        file_path: str,
-        hyperfile_path: str,
-        content: str,
-        reason: str = ""
-    ) -> ConfigUpdateResult:
-        """
-        Create a hyperfile entry in the config.
-        
-        Hyperfiles are virtual files that the firmware expects but don't exist.
-        
-        Args:
-            file_path: Path to config YAML file
-            hyperfile_path: Path of the hyperfile (e.g., "/proc/self/environ")
-            content: Content of the hyperfile
-            reason: Explanation for creating this hyperfile
-            
-        Returns:
-            ConfigUpdateResult with operation details
-        """
-        # For now, hyperfiles are stored under the "pseudofiles" section
-        # This adds an entry to pseudofiles mapping
-        return self.update_value(
-            file_path=file_path,
-            yaml_path=f"pseudofiles.{hyperfile_path.replace('/', '.')}",
-            value=content,
-            reason=f"Create hyperfile {hyperfile_path}: {reason}"
-        )
-    
-    def enable_patch(
-        self,
-        file_path: str,
-        patch_name: str,
-        reason: str = ""
-    ) -> ConfigUpdateResult:
-        """
-        Enable a patch by adding it to the patches list.
-        
-        Args:
-            file_path: Path to config YAML file
-            patch_name: Name of the patch file (e.g., "static_patches/new_patch.yaml")
-            reason: Explanation for enabling this patch
-            
-        Returns:
-            ConfigUpdateResult with operation details
-        """
-        return self.add_to_list(
-            file_path=file_path,
-            yaml_path="patches",
-            value=patch_name,
-            reason=f"Enable patch: {reason}",
-            unique=True
-        )
-    
-    def update_core_setting(
-        self,
-        file_path: str,
-        setting_name: str,
-        value: Any,
-        reason: str = ""
-    ) -> ConfigUpdateResult:
-        """
-        Update a core configuration setting.
-        
-        Args:
-            file_path: Path to config YAML file
-            setting_name: Name of the core setting (e.g., "root_shell", "network")
-            value: New value for the setting
-            reason: Explanation for the change
-            
-        Returns:
-            ConfigUpdateResult with operation details
-        """
-        return self.update_value(
-            file_path=file_path,
-            yaml_path=f"core.{setting_name}",
-            value=value,
-            reason=f"Update core.{setting_name}: {reason}"
-        )
-    
-    def get_value(self, file_path: str, yaml_path: str) -> Optional[Any]:
-        """
-        Retrieve a value from the YAML file.
-        
-        Args:
-            file_path: Path to YAML file
-            yaml_path: Dot-separated path to the value
-            
-        Returns:
-            The value at the specified path, or None if not found
-        """
-        full_path = self.config_base_path / file_path
-        
-        try:
-            if not full_path.exists():
-                return None
-            
-            with open(full_path, 'r') as f:
-                config = yaml.safe_load(f) or {}
-            
-            # Navigate to the value
-            path_parts = yaml_path.split('.')
-            target = config
-            
-            for part in path_parts:
-                if isinstance(target, dict) and part in target:
-                    target = target[part]
-                else:
-                    return None
-            
-            return target
-            
-        except Exception:
-            return None
+@dataclass
+class ToolDefinition:
+    """Definition of a tool following the JSON format."""
+    name: str
+    description: str
+    parameters: Dict[str, Any]
+    required: List[str]
+    strict: bool = True
 
 
 class ConfigToolRegistry:
-    """
-    Registry of available configuration tools.
-    
-    Maps tool names from the plan to actual tool implementations.
-    """
+    """Registry of configuration tools for Penguin rehosting."""
     
     def __init__(self, project_path: Path):
-        """
-        Initialize the tool registry.
-        
-        Args:
-            project_path: Path to the Penguin project directory
-        """
         self.project_path = project_path
-        self.yaml_editor = YAMLConfigEditor(config_base_path=project_path)
+        self.config_file = project_path / "config.yaml"
         
-        # Map tool names to methods
-        self.tools = {
-            "yaml_editor": self._handle_yaml_editor,
-            "patch_manager": self._handle_patch_manager,
-            "hyperfile_builder": self._handle_hyperfile_builder,
-            "core_config": self._handle_core_config,
-        }
+        # Store original config for diff purposes
+        self.original_config = None
+        self.config = self._load_config()
+        
+        # Store original config if it exists
+        if self.config:
+            self.original_config = self._deep_copy_config(self.config)
     
-    def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> ConfigUpdateResult:
-        """
-        Execute a tool with the given parameters.
-        
-        Args:
-            tool_name: Name of the tool to execute
-            params: Parameters for the tool
-            
-        Returns:
-            ConfigUpdateResult with operation details
-        """
-        if tool_name not in self.tools:
-            return ConfigUpdateResult(
-                success=False,
-                message=f"Unknown tool: {tool_name}",
-                file_path="",
-                changes={}
-            )
-        
+    def _load_config(self) -> Dict[str, Any]:
+        """Load existing config.yaml or return empty dict."""
+        if self.config_file.exists():
+            try:
+                with open(self.config_file, 'r') as f:
+                    return yaml.safe_load(f) or {}
+            except Exception as e:
+                print(f"Warning: Could not load config.yaml: {e}")
+                return {}
+        return {}
+    
+    def _save_config(self) -> bool:
+        """Save config to file."""
         try:
-            return self.tools[tool_name](params)
+            with open(self.config_file, 'w') as f:
+                yaml.dump(self.config, f, default_flow_style=False, sort_keys=False)
+            return True
         except Exception as e:
-            return ConfigUpdateResult(
-                success=False,
-                message=f"Tool execution failed: {str(e)}",
-                file_path="",
-                changes={}
-            )
+            print(f"Error saving config: {e}")
+            return False
     
-    def _handle_yaml_editor(self, params: Dict[str, Any]) -> ConfigUpdateResult:
-        """Handle generic YAML editing operations."""
-        action = params.get("action", "update")
-        file_path = params.get("file", "config.yaml")
-        path = params.get("path", "")
-        value = params.get("value")
-        reason = params.get("reason", "")
+    def _ensure_section(self, path: str) -> None:
+        """Ensure a nested section exists in config."""
+        parts = path.split('.')
+        current = self.config
         
-        if action == "update" or action == "update_config":
-            return self.yaml_editor.update_value(file_path, path, value, reason)
-        elif action == "add_to_list":
-            return self.yaml_editor.add_to_list(file_path, path, value, reason)
+        for part in parts[:-1]:
+            if part not in current:
+                current[part] = {}
+            current = current[part]
+    
+    def _get_nested_value(self, path: str) -> Any:
+        """Get value from nested path."""
+        parts = path.split('.')
+        current = self.config
+        
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return None
+        return current
+    
+    def _set_nested_value(self, path: str, value: Any) -> None:
+        """Set value at nested path."""
+        parts = path.split('.')
+        current = self.config
+        
+        for part in parts[:-1]:
+            if part not in current:
+                current[part] = {}
+            current = current[part]
+        
+        current[parts[-1]] = value
+    
+    def _add_to_list(self, path: str, value: Any) -> None:
+        """Add value to list at path."""
+        parts = path.split('.')
+        current = self.config
+        
+        for part in parts[:-1]:
+            if part not in current:
+                current[part] = {}
+            current = current[part]
+        
+        if parts[-1] not in current:
+            current[parts[-1]] = []
+        
+        if not isinstance(current[parts[-1]], list):
+            current[parts[-1]] = []
+        
+        current[parts[-1]].append(value)
+    
+    def _remove_from_list(self, path: str, value: Any) -> bool:
+        """Remove value from list at path."""
+        parts = path.split('.')
+        current = self.config
+        
+        for part in parts[:-1]:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return False
+        
+        if isinstance(current, dict) and parts[-1] in current:
+            if isinstance(current[parts[-1]], list):
+                try:
+                    current[parts[-1]].remove(value)
+                    return True
+                except ValueError:
+                    return False
+        return False
+    
+    def _remove_nested_value(self, path: str) -> bool:
+        """Remove value at nested path."""
+        parts = path.split('.')
+        current = self.config
+        
+        for part in parts[:-1]:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return False
+        
+        if isinstance(current, dict) and parts[-1] in current:
+            del current[parts[-1]]
+            return True
+        return False
+    
+    # Tool implementations following JSON format
+    
+    def change_init_program(self, error: str) -> Dict[str, Any]:
+        """
+        Select a different system init program.
+        
+        Invoke if you see something like: Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000
+        """
+        try:
+            # Common init programs to try
+            init_programs = ["/sbin/init", "/bin/init", "/usr/sbin/init", "/usr/bin/init"]
+            
+            # Try to find a working init program
+            for init_prog in init_programs:
+                if Path(init_prog).exists():
+                    self._set_nested_value("env.igloo_init", init_prog)
+                    if self._save_config():
+                        return {
+                            "status": "success",
+                            "message": f"Changed init program to {init_prog}",
+                            "changes": {"init_program": init_prog}
+                        }
+            
+            return {
+                "status": "failed",
+                "message": "No suitable init program found",
+                "changes": {}
+            }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error changing init program: {e}",
+                "changes": {}
+            }
+    
+    def add_environment_variable(self, name: str, reason: str) -> Dict[str, Any]:
+        """
+        Add a new environment variable (boot argument) to the Penguin config.yaml.
+        
+        Never change the igloo_init env var.
+        The env var name argument you provide must be one that see you indication is missing.
+        Do not make up any fake arguments.
+        """
+        try:
+            if name == "igloo_init":
+                return {
+                    "status": "failed",
+                    "message": "Cannot modify igloo_init environment variable",
+                    "changes": {}
+                }
+            
+            # Set to a placeholder value that can be discovered dynamically
+            placeholder_value = "DYNVALDYNVALDYNVAL"
+            self._set_nested_value(f"env.{name}", placeholder_value)
+            
+            if self._save_config():
+                return {
+                    "status": "success",
+                    "message": f"Added environment variable {name} with placeholder value for dynamic discovery",
+                    "changes": {"env_var": name, "value": placeholder_value}
+                }
+            else:
+                return {
+                    "status": "failed",
+                    "message": "Failed to save config",
+                    "changes": {}
+                }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error adding environment variable: {e}",
+                "changes": {}
+            }
+    
+    def remove_environment_variable(self, name: str, reason: str) -> Dict[str, Any]:
+        """
+        Remove an environment variable from the Penguin config.yaml.
+        
+        Never change the igloo_init env var.
+        Do not make up any fake arguments.
+        """
+        try:
+            if name == "igloo_init":
+                return {
+                    "status": "failed",
+                    "message": "Cannot remove igloo_init environment variable",
+                    "changes": {}
+                }
+            
+            if self._remove_nested_value(f"env.{name}"):
+                if self._save_config():
+                    return {
+                        "status": "success",
+                        "message": f"Removed environment variable {name}",
+                        "changes": {"removed_env_var": name}
+                    }
+                else:
+                    return {
+                        "status": "failed",
+                        "message": "Failed to save config",
+                        "changes": {}
+                    }
+            else:
+                return {
+                    "status": "failed",
+                    "message": f"Environment variable {name} not found",
+                    "changes": {}
+                }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error removing environment variable: {e}",
+                "changes": {}
+            }
+    
+    def add_pseudofile(self, filepath: str, name: str, reason: str) -> Dict[str, Any]:
+        """
+        Add a new pseudofile to the Penguin config.yaml modeling a device in /sys, /dev, or /proc.
+        
+        If the file is an mtd (/dev/mtdX) device, specify the name of the MTD device as the <name> argument.
+        We leave the devices unconfigured because we do not know what the system is trying to do with the device.
+        The pseudofile path you provide must be one that you see indication is missing.
+        Do not make up any fake arguments.
+        """
+        try:
+            # Validate path is in allowed directories
+            if not any(filepath.startswith(prefix) for prefix in ["/sys/", "/dev/", "/proc/"]):
+                return {
+                    "status": "failed",
+                    "message": "Pseudofile path must be in /sys, /dev, or /proc",
+                    "changes": {}
+                }
+            
+            # Ensure pseudofiles section exists
+            self._ensure_section("pseudofiles")
+            
+            # Add pseudofile entry
+            pseudofile_entry = {
+                "path": filepath,
+                "name": name if filepath.startswith("/dev/mtd") else None
+            }
+            
+            self._add_to_list("pseudofiles", pseudofile_entry)
+            
+            if self._save_config():
+                return {
+                    "status": "success",
+                    "message": f"Added pseudofile {filepath}",
+                    "changes": {"pseudofile": filepath, "name": name}
+                }
+            else:
+                return {
+                    "status": "failed",
+                    "message": "Failed to save config",
+                    "changes": {}
+                }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error adding pseudofile: {e}",
+                "changes": {}
+            }
+    
+    def remove_pseudofile(self, filepath: str, reason: str) -> Dict[str, Any]:
+        """
+        Remove a pseudofile from the Penguin config.yaml.
+        """
+        try:
+            # Find and remove pseudofile
+            pseudofiles = self._get_nested_value("pseudofiles") or []
+            if isinstance(pseudofiles, list):
+                for i, pf in enumerate(pseudofiles):
+                    if isinstance(pf, dict) and pf.get("path") == filepath:
+                        pseudofiles.pop(i)
+                        if self._save_config():
+                            return {
+                                "status": "success",
+                                "message": f"Removed pseudofile {filepath}",
+                                "changes": {"removed_pseudofile": filepath}
+                            }
+                        else:
+                            return {
+                                "status": "failed",
+                                "message": "Failed to save config",
+                                "changes": {}
+                            }
+            
+            return {
+                "status": "failed",
+                "message": f"Pseudofile {filepath} not found",
+                "changes": {}
+            }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error removing pseudofile: {e}",
+                "changes": {}
+            }
+    
+    def set_file_read_behavior(self, filepath: str, model: str, value: str, reason: str) -> Dict[str, Any]:
+        """
+        Modify the READ model of a pseudofile if you have a specific value to return on 'reads'.
+        
+        Aka the content of the file.
+        """
+        try:
+            if model not in ["return_zero", "const_buf"]:
+                return {
+                    "status": "failed",
+                    "message": "Model must be 'return_zero' or 'const_buf'",
+                    "changes": {}
+                }
+            
+            # Find pseudofile and update its read behavior
+            pseudofiles = self._get_nested_value("pseudofiles") or []
+            if isinstance(pseudofiles, list):
+                for pf in pseudofiles:
+                    if isinstance(pf, dict) and pf.get("path") == filepath:
+                        pf["read_model"] = model
+                        if model == "const_buf":
+                            pf["read_value"] = value
+                        if self._save_config():
+                            return {
+                                "status": "success",
+                                "message": f"Set read behavior for {filepath} to {model}",
+                                "changes": {"filepath": filepath, "read_model": model, "value": value}
+                            }
+                        else:
+                            return {
+                                "status": "failed",
+                                "message": "Failed to save config",
+                                "changes": {}
+                            }
+            
+            return {
+                "status": "failed",
+                "message": f"Pseudofile {filepath} not found",
+                "changes": {}
+            }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error setting file read behavior: {e}",
+                "changes": {}
+            }
+    
+    def set_file_ioctl_behavior(self, filepath: str, ioctl_number: str, model: str, reason: str) -> Dict[str, Any]:
+        """
+        After adding a pseudofile with add_pseudofile(), you can modify the IOCTL model of a pseudofile.
+        
+        Invoke this tool if you want to address read/write/IOCTL failures in pseudofile_failures.txt.
+        This will set read -> 0, write -> discard, IOCTL -> 0.
+        Cannot only model files in /sys, /dev, or /proc.
+        Do not make up any fake arguments. Only call this tool once at a time
+        """
+        try:
+            if model != "return_success":
+                return {
+                    "status": "failed",
+                    "message": "Model must be 'return_success'",
+                    "changes": {}
+                }
+            
+            # Find pseudofile and update its IOCTL behavior
+            pseudofiles = self._get_nested_value("pseudofiles") or []
+            if isinstance(pseudofiles, list):
+                for pf in pseudofiles:
+                    if isinstance(pf, dict) and pf.get("path") == filepath:
+                        pf["ioctl_model"] = model
+                        pf["ioctl_number"] = ioctl_number
+                        pf["read_model"] = "return_zero"
+                        pf["write_model"] = "discard"
+                        if self._save_config():
+                            return {
+                                "status": "success",
+                                "message": f"Set IOCTL behavior for {filepath} to {model}",
+                                "changes": {"filepath": filepath, "ioctl_model": model, "ioctl_number": ioctl_number}
+                            }
+                        else:
+                            return {
+                                "status": "failed",
+                                "message": "Failed to save config",
+                                "changes": {}
+                            }
+            
+            return {
+                "status": "failed",
+                "message": f"Pseudofile {filepath} not found",
+                "changes": {}
+            }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error setting file IOCTL behavior: {e}",
+                "changes": {}
+            }
+    
+    def add_network_interface(self, net_name: str, reason: str) -> Dict[str, Any]:
+        """
+        Add a new network interface name to configure within the guest firmware emulation.
+        
+        The network interface name you provide must be one that you see indication is missing.
+        Do not make up a fake name.
+        """
+        try:
+            # Ensure network section exists
+            self._ensure_section("network")
+            
+            # Add network interface
+            self._add_to_list("network.interfaces", net_name)
+            
+            if self._save_config():
+                return {
+                    "status": "success",
+                    "message": f"Added network interface {net_name}",
+                    "changes": {"network_interface": net_name}
+                }
+            else:
+                return {
+                    "status": "failed",
+                    "message": "Failed to save config",
+                    "changes": {}
+                }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error adding network interface: {e}",
+                "changes": {}
+            }
+    
+    def grep_strace_output(self, grep_command: str, reason: str) -> Dict[str, Any]:
+        """
+        Every process in the system will have its system calls traced (strace) and logged.
+        
+        Use this tool to grep that output and, for example, learn about a file's accesses.
+        """
+        try:
+            # Look for strace output files in results directory
+            results_dir = self.project_path / "results"
+            if not results_dir.exists():
+                return {
+                    "status": "failed",
+                    "message": "No results directory found",
+                    "changes": {}
+                }
+            
+            # Find the most recent results directory
+            result_dirs = [d for d in results_dir.iterdir() if d.is_dir()]
+            if not result_dirs:
+                return {
+                    "status": "failed",
+                    "message": "No result directories found",
+                    "changes": {}
+                }
+            
+            latest_result = max(result_dirs, key=lambda d: d.name)
+            strace_file = latest_result / "console.log"
+            
+            if not strace_file.exists():
+                return {
+                    "status": "failed",
+                    "message": "No console.log found in results",
+                    "changes": {}
+                }
+            
+            # Execute grep command
+            cmd = f"grep {grep_command} {strace_file}"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            
+            return {
+                "status": "success",
+                "message": f"Grep completed with exit code {result.returncode}",
+                "changes": {
+                    "grep_command": cmd,
+                    "exit_code": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr
+                }
+            }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error running grep: {e}",
+                "changes": {}
+            }
+    
+    def replace_script_exit0(self, script_path: str, reason: str) -> Dict[str, Any]:
+        """
+        Replace a script with exit0.sh (script that just returns success: 0).
+        
+        For example, if something keeps trying to tell the system to turn off with shutdown script '/bin/killall', replace it with 'exit0.sh'.
+        """
+        try:
+            # Create exit0.sh script
+            exit0_script = "#!/bin/sh\nexit 0\n"
+            
+            # Create the replacement script
+            script_file = self.project_path / script_path
+            script_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(script_file, 'w') as f:
+                f.write(exit0_script)
+            
+            # Make it executable
+            script_file.chmod(0o755)
+            
+            return {
+                "status": "success",
+                "message": f"Replaced {script_path} with exit0.sh",
+                "changes": {"replaced_script": script_path}
+            }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error replacing script: {e}",
+                "changes": {}
+            }
+    
+    # Tool registry for easy access
+    def get_tool(self, tool_name: str):
+        """Get tool function by name."""
+        tools = {
+            "change_init_program": self.change_init_program,
+            "add_environment_variable": self.add_environment_variable,
+            "remove_environment_variable": self.remove_environment_variable,
+            "add_pseudofile": self.add_pseudofile,
+            "remove_pseudofile": self.remove_pseudofile,
+            "set_file_read_behavior": self.set_file_read_behavior,
+            "set_file_ioctl_behavior": self.set_file_ioctl_behavior,
+            "add_network_interface": self.add_network_interface,
+            "grep_strace_output": self.grep_strace_output,
+            "replace_script_exit0": self.replace_script_exit0,
+        }
+        return tools.get(tool_name)
+    
+    def list_tools(self) -> List[str]:
+        """List available tool names."""
+        return [
+            "change_init_program",
+            "add_environment_variable", 
+            "remove_environment_variable",
+            "add_pseudofile",
+            "remove_pseudofile",
+            "set_file_read_behavior",
+            "set_file_ioctl_behavior",
+            "add_network_interface",
+            "grep_strace_output",
+            "replace_script_exit0",
+        ]
+    
+    def _deep_copy_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a deep copy of the config for diff purposes."""
+        return json.loads(json.dumps(config))
+    
+    def get_config_diff(self) -> str:
+        """
+        Generate a diff between original and current config.
+        
+        Returns:
+            String representation of the diff
+        """
+        if not self.original_config:
+            return "No original config to compare against"
+        
+        # Convert both configs to YAML strings for diff
+        original_yaml = yaml.dump(self.original_config, default_flow_style=False, sort_keys=False)
+        current_yaml = yaml.dump(self.config, default_flow_style=False, sort_keys=False)
+        
+        # Generate unified diff
+        diff_lines = difflib.unified_diff(
+            original_yaml.splitlines(keepends=True),
+            current_yaml.splitlines(keepends=True),
+            fromfile="original config.yaml",
+            tofile="current config.yaml",
+            lineterm=""
+        )
+        
+        return "".join(diff_lines)
+    
+    def get_config_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of the current configuration.
+        
+        Returns:
+            Dictionary with config summary information
+        """
+        summary = {
+            "file_path": str(self.config_file),
+            "exists": self.config_file.exists(),
+            "sections": list(self.config.keys()) if self.config else [],
+            "has_changes": self.original_config != self.config if self.original_config else False
+        }
+        
+        # Count items in each section
+        for section, content in self.config.items():
+            if isinstance(content, dict):
+                summary[f"{section}_count"] = len(content)
+            elif isinstance(content, list):
+                summary[f"{section}_count"] = len(content)
+            else:
+                summary[f"{section}_type"] = type(content).__name__
+        
+        return summary
+    
+    def print_config_diff(self) -> None:
+        """Print the config diff to console."""
+        diff = self.get_config_diff()
+        if diff.strip():
+            print("\n" + "=" * 70)
+            print("CONFIGURATION CHANGES")
+            print("=" * 70)
+            print(diff)
+            print("=" * 70)
         else:
-            return ConfigUpdateResult(
-                success=False,
-                message=f"Unknown YAML editor action: {action}",
-                file_path=file_path,
-                changes={}
-            )
+            print("\n📋 No configuration changes detected")
     
-    def _handle_patch_manager(self, params: Dict[str, Any]) -> ConfigUpdateResult:
-        """Handle patch management operations."""
-        file_path = params.get("file", "config.yaml")
-        patch_name = params.get("patch", "")
-        reason = params.get("reason", "")
+    def print_config_summary(self) -> None:
+        """Print the config summary to console."""
+        summary = self.get_config_summary()
         
-        return self.yaml_editor.enable_patch(file_path, patch_name, reason)
-    
-    def _handle_hyperfile_builder(self, params: Dict[str, Any]) -> ConfigUpdateResult:
-        """Handle hyperfile creation."""
-        file_path = params.get("file", "config.yaml")
-        hyperfile_path = params.get("hyperfile_path", "")
-        content = params.get("content", "")
-        reason = params.get("reason", "")
+        print("\n" + "=" * 70)
+        print("CONFIGURATION SUMMARY")
+        print("=" * 70)
+        print(f"File: {summary['file_path']}")
+        print(f"Exists: {summary['exists']}")
+        print(f"Has Changes: {summary['has_changes']}")
+        print(f"Sections: {', '.join(summary['sections'])}")
         
-        return self.yaml_editor.create_hyperfile(file_path, hyperfile_path, content, reason)
-    
-    def _handle_core_config(self, params: Dict[str, Any]) -> ConfigUpdateResult:
-        """Handle core configuration updates."""
-        file_path = params.get("file", "config.yaml")
-        setting = params.get("setting", "")
-        value = params.get("value")
-        reason = params.get("reason", "")
+        # Show section details
+        for section in summary['sections']:
+            if f"{section}_count" in summary:
+                print(f"  {section}: {summary[f'{section}_count']} items")
         
-        return self.yaml_editor.update_core_setting(file_path, setting, value, reason)
-
+        print("=" * 70)

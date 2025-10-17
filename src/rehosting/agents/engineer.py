@@ -13,6 +13,8 @@ from ollama import chat, ChatResponse
 
 from src.rehosting.schemas import ActionRecord
 from src.rehosting.knowledge_base import KnowledgeBase, get_knowledge_base
+from src.rehosting.tools.config_tools import ConfigToolRegistry
+from src.rehosting.tools.tool_definitions import get_all_tool_schemas, get_tool_definition
 from src.settings import is_verbose, verbose_print
 
 
@@ -55,29 +57,8 @@ class EngineerAgent:
     - Reports results back to orchestrator
     """
     
-    # Available tools for the Engineer
-    AVAILABLE_TOOLS = """
-Available Tools:
-1. yaml_editor: Update YAML configuration files
-   - action: update_config
-   - params: {file, path, value, reason}
-   - Example: Update env.PATH to "/usr/bin:/bin"
-
-2. patch_manager: Enable/disable configuration patches
-   - action: enable_patch
-   - params: {file, patch, reason}
-   - Example: Enable "static_patches/root_shell.yaml"
-
-3. hyperfile_builder: Create virtual file entries
-   - action: create_hyperfile
-   - params: {file, hyperfile_path, content, reason}
-   - Example: Create /proc/version with content "Linux version 4.14.0"
-
-4. core_config: Update core configuration settings
-   - action: update_core
-   - params: {file, setting, value, reason}
-   - Example: Set core.root_shell to true
-"""
+    # Available tools for the Engineer (from tool definitions)
+    AVAILABLE_TOOLS = get_all_tool_schemas()
 
     SYSTEM_PROMPT = """You are an Engineer agent specialized in implementing firmware rehosting configuration changes.
 
@@ -86,36 +67,42 @@ Your role:
 2. Reason about HOW to implement it using available tools
 3. Generate specific tool calls with exact parameters
 
+Available Tools:
 {tools}
 
 Output Format:
 You MUST return ONLY valid JSON with this structure:
 {{
   "reasoning": "Brief explanation of your approach",
+  "action": "execute" | "skip",
   "tool_calls": [
     {{
       "tool": "tool_name",
-      "action": "action_name",
       "params": {{
-        "file": "config.yaml",
-        "path": "yaml.path.here",
-        "value": "value_here",
+        "param1": "value1",
+        "param2": "value2",
         "reason": "why this change is needed"
       }}
     }}
-  ]
+  ],
+  "skip_reason": "Explanation of why this option cannot be solved with available tools (only if action is 'skip')"
 }}
 
 Rules:
-- For environment variables: use yaml_editor with path "env.VARNAME"
-- For core settings: use core_config with setting name
-- For patches: use patch_manager with patch file path
-- For missing files/devices: use hyperfile_builder
-- Always provide clear reasons for each change
+- Use the exact tool names from the available tools list
+- Provide all required parameters for each tool
+- Always include a clear "reason" parameter
+- For environment variables: use add_environment_variable
+- For pseudofiles: use add_pseudofile, set_file_read_behavior, set_file_ioctl_behavior
+- For network: use add_network_interface
+- For analysis: use grep_strace_output
+- For scripts: use replace_script_exit0
+- If NO available tool can solve this problem, set "action": "skip" and provide "skip_reason"
+- Only set "action": "execute" if you can actually implement the solution with available tools
 - Output ONLY the JSON, no markdown, no explanations outside JSON
 """
 
-    def __init__(self, project_path: Path, model: str = "llama3.3:latest", max_retries: int = 2, kb_path: Optional[Path] = None):
+    def __init__(self, project_path: Path, model: str = "llama3.3:latest", max_retries: int = 2, kb_path: Optional[Path] = None, max_options: int = 3):
         """
         Initialize the Engineer agent.
         
@@ -124,12 +111,15 @@ Rules:
             model: LLM model to use for reasoning
             max_retries: Maximum retry attempts for invalid LLM responses
             kb_path: Path to knowledge base file (optional)
+            max_options: Maximum number of options to execute (0 = execute all)
         """
         self.project_path = project_path
         self.model = model
         self.max_retries = max_retries
+        self.max_options = max_options
         self.kb = get_knowledge_base(kb_path)
         self.state = EngineerState()
+        self.tool_registry = ConfigToolRegistry(project_path)
     
     def execute_plan(self, plan: Any) -> Dict[str, Any]:
         """
@@ -149,7 +139,8 @@ Rules:
             verbose_print(f"Total Options: {len(plan.options)}", prefix="[ENGINEER]")
             verbose_print("=" * 70)
         
-        print(f"\n🔧 Engineer: Executing plan {plan.id} with {len(plan.options)} options...")
+        total_options = len(plan.options)
+        print(f"\n🔧 Engineer: Executing plan {plan.id} with {total_options} options...")
         
         # Reset state for new plan
         self.state = EngineerState()
@@ -163,6 +154,13 @@ Rules:
                 999
             )
         )
+        
+        # Limit number of options to execute
+        if self.max_options > 0 and len(sorted_options) > self.max_options:
+            if is_verbose():
+                verbose_print(f"[ENGINEER] Limiting execution to {self.max_options} options (out of {len(sorted_options)} total)", prefix="[ENGINEER]")
+            print(f"   ⚠️  Limiting to {self.max_options} highest priority options (out of {len(sorted_options)} total)")
+            sorted_options = sorted_options[:self.max_options]
         
         results = {
             "plan_id": plan.id,
@@ -233,10 +231,14 @@ Rules:
             results["action_records"].append(action_record)
             
             # Update counters
-            if execution_result.get("status") == "success":
+            status = execution_result.get("status")
+            if status == "success":
                 self.state.completed_options.append(option_id)
                 results["completed"] += 1
                 print(f"      ✅ Success: {execution_result.get('message', '')}")
+            elif status == "skipped":
+                results["skipped"] += 1
+                print(f"      ⏭️  Skipped: {execution_result.get('message', '')}")
             else:
                 self.state.failed_options.append(option_id)
                 results["failed"] += 1
@@ -255,13 +257,20 @@ Rules:
             verbose_print("ENGINEER: PLAN EXECUTION COMPLETE", prefix="[ENGINEER]")
             verbose_print("=" * 70)
             verbose_print(f"Completed: {results['completed']}", prefix="[ENGINEER]")
+            verbose_print(f"Skipped: {results['skipped']}", prefix="[ENGINEER]")
             verbose_print(f"Failed: {results['failed']}", prefix="[ENGINEER]")
             verbose_print(f"Total Actions: {len(results['action_records'])}", prefix="[ENGINEER]")
             verbose_print("=" * 70)
         
         print(f"\n✨ Plan execution complete:")
         print(f"   ✅ Completed: {results['completed']}")
+        print(f"   ⏭️  Skipped: {results['skipped']}")
         print(f"   ❌ Failed: {results['failed']}")
+        
+        # Show configuration changes if any
+        if results['completed'] > 0:
+            self.tool_registry.print_config_summary()
+            self.tool_registry.print_config_diff()
         
         return results
     
@@ -288,7 +297,24 @@ Rules:
                 verbose_print(f"  Description: {description}", prefix="[ENGINEER]")
             
             # Call LLM to reason about implementation (with retries)
-            tool_calls = self._call_llm_for_implementation(description, option_data)
+            llm_response = self._call_llm_for_implementation(description, option_data)
+            
+            # Check if LLM chose to skip this option
+            if llm_response.get("action") == "skip":
+                skip_reason = llm_response.get("skip_reason", "No reason provided")
+                if is_verbose():
+                    verbose_print(f"[SKIP] {skip_reason}", prefix="[ENGINEER]")
+                
+                return {
+                    "option_id": option_id,
+                    "status": "skipped",
+                    "message": f"Skipped: {skip_reason}",
+                    "file_path": "",
+                    "changes": {"skipped": True, "reason": skip_reason}
+                }
+            
+            # Get tool calls from response
+            tool_calls = llm_response.get("tool_calls", [])
             
             # Check if we got valid tool calls
             if not tool_calls:
@@ -303,56 +329,66 @@ Rules:
             if is_verbose():
                 verbose_print(f"[LLM RESULT] Generated {len(tool_calls)} tool calls", prefix="[ENGINEER]")
             
-            # Execute each tool call (or print what would be done)
+            # Execute each tool call
             all_changes = []
             messages = []
+            successful_calls = 0
             
             for i, tool_call in enumerate(tool_calls, 1):
-                tool = tool_call.get("tool", "unknown")
-                action = tool_call.get("action", "unknown")
+                tool_name = tool_call.get("tool", "unknown")
                 params = tool_call.get("params", {})
                 
-                # Print what would be done
-                file_path = params.get("file", "config.yaml")
-                reason = params.get("reason", "")
+                verbose_print(f"[EXECUTING {i}/{len(tool_calls)}] Tool: {tool_name}", prefix="[ENGINEER]")
+                verbose_print(f"  Params: {json.dumps(params, indent=2)}", prefix="[ENGINEER]")
                 
-                verbose_print(f"[WOULD EXECUTE {i}/{len(tool_calls)}] Tool: {tool}", prefix="[ENGINEER]")
-                verbose_print(f"  File: {self.project_path / file_path}", prefix="[ENGINEER]")
-                verbose_print(f"  Action: {action}", prefix="[ENGINEER]")
+                # Get the tool function from registry
+                tool_func = self.tool_registry.get_tool(tool_name)
+                if not tool_func:
+                    error_msg = f"Unknown tool: {tool_name}"
+                    verbose_print(f"  ❌ {error_msg}", prefix="[ENGINEER]")
+                    messages.append(f"Failed: {error_msg}")
+                    continue
                 
-                if tool == "yaml_editor":
-                    yaml_path = params.get("path", "")
-                    value = params.get("value", "")
-                    verbose_print(f"  Would update: {yaml_path} = {value}", prefix="[ENGINEER]")
-                    all_changes.append(f"Update {yaml_path} = {value}")
+                try:
+                    # Call the tool with parameters
+                    result = tool_func(**params)
                     
-                elif tool == "patch_manager":
-                    patch_name = params.get("patch", "")
-                    verbose_print(f"  Would enable patch: {patch_name}", prefix="[ENGINEER]")
-                    all_changes.append(f"Enable patch {patch_name}")
-                    
-                elif tool == "hyperfile_builder":
-                    hyperfile_path = params.get("hyperfile_path", "")
-                    content = params.get("content", "")
-                    verbose_print(f"  Would create hyperfile: {hyperfile_path}", prefix="[ENGINEER]")
-                    verbose_print(f"    Content: {content[:100]}...", prefix="[ENGINEER]")
-                    all_changes.append(f"Create hyperfile {hyperfile_path}")
-                    
-                elif tool == "core_config":
-                    setting = params.get("setting", "")
-                    value = params.get("value", "")
-                    verbose_print(f"  Would update core setting: {setting} = {value}", prefix="[ENGINEER]")
-                    all_changes.append(f"Update core.{setting} = {value}")
-                
-                verbose_print(f"  Reason: {reason}", prefix="[ENGINEER]")
-                messages.append(f"{action} via {tool}: {reason}")
+                    if result.get("status") == "success":
+                        successful_calls += 1
+                        verbose_print(f"  ✅ Success: {result.get('message', '')}", prefix="[ENGINEER]")
+                        messages.append(f"Success: {result.get('message', '')}")
+                        
+                        # Collect changes for summary
+                        changes = result.get("changes", {})
+                        if changes:
+                            all_changes.append(changes)
+                    else:
+                        error_msg = result.get("message", "Unknown error")
+                        verbose_print(f"  ❌ Failed: {error_msg}", prefix="[ENGINEER]")
+                        messages.append(f"Failed: {error_msg}")
+                        
+                except Exception as e:
+                    error_msg = f"Tool execution error: {str(e)}"
+                    verbose_print(f"  ❌ {error_msg}", prefix="[ENGINEER]")
+                    messages.append(f"Error: {error_msg}")
+            
+            # Determine overall status
+            if successful_calls == len(tool_calls):
+                status = "success"
+                message = f"All {len(tool_calls)} tool calls executed successfully"
+            elif successful_calls > 0:
+                status = "partial"
+                message = f"{successful_calls}/{len(tool_calls)} tool calls succeeded"
+            else:
+                status = "failed"
+                message = "All tool calls failed"
             
             return {
                 "option_id": option_id,
-                "status": "success",
-                "message": f"[DRY RUN] {len(tool_calls)} actions planned: " + "; ".join(messages[:2]),
+                "status": status,
+                "message": message,
                 "file_path": str(self.project_path / "config.yaml"),
-                "changes": {"simulated": True, "tool_calls": len(tool_calls), "changes": all_changes}
+                "changes": {"tool_calls": len(tool_calls), "successful": successful_calls, "changes": all_changes}
             }
             
         except Exception as e:
@@ -374,7 +410,7 @@ Rules:
         self,
         description: str,
         option_data: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         Call LLM to determine specific tool calls for implementing this option.
         
@@ -385,7 +421,7 @@ Rules:
             option_data: Full option data from planner
             
         Returns:
-            List of tool calls to execute (empty list if all retries fail)
+            Dictionary with action, tool_calls, and optional skip_reason
         """
         last_error = None
         
@@ -423,7 +459,9 @@ Generate the implementation plan as JSON."""
                 if is_retry and last_error:
                     user_prompt += f"\n\nPREVIOUS ATTEMPT FAILED: {last_error}\nPlease output VALID JSON matching the schema exactly."
 
-                system_prompt = self.SYSTEM_PROMPT.format(tools=self.AVAILABLE_TOOLS)
+                # Format tools for the prompt
+                tools_text = json.dumps(self.AVAILABLE_TOOLS, indent=2)
+                system_prompt = self.SYSTEM_PROMPT.format(tools=tools_text)
                 
                 messages = [
                     {"role": "system", "content": system_prompt},
@@ -463,12 +501,31 @@ Generate the implementation plan as JSON."""
                 
                 # Parse response
                 result = json.loads(llm_response)
+                action = result.get("action", "execute")
                 tool_calls = result.get("tool_calls", [])
                 reasoning = result.get("reasoning", "")
+                skip_reason = result.get("skip_reason", "")
                 
-                # Validate we got tool calls
+                # Validate action
+                if action not in ["execute", "skip"]:
+                    last_error = f"Invalid action '{action}'. Must be 'execute' or 'skip'"
+                    verbose_print(f"[ENGINEER] Attempt {attempt + 1} failed: {last_error}")
+                    continue
+                
+                # If skipping, validate skip_reason
+                if action == "skip":
+                    if not skip_reason:
+                        last_error = "Action is 'skip' but no skip_reason provided"
+                        verbose_print(f"[ENGINEER] Attempt {attempt + 1} failed: {last_error}")
+                        continue
+                    # Return skip response
+                    if is_verbose() and reasoning:
+                        verbose_print(f"[LLM REASONING] {reasoning}", prefix="[ENGINEER]")
+                    return {"action": "skip", "skip_reason": skip_reason, "reasoning": reasoning}
+                
+                # If executing, validate we got tool calls
                 if not tool_calls:
-                    last_error = "Response missing 'tool_calls' array or it's empty"
+                    last_error = "Action is 'execute' but no tool_calls provided"
                     verbose_print(f"[ENGINEER] Attempt {attempt + 1} failed: {last_error}")
                     continue
                 
@@ -493,7 +550,7 @@ Generate the implementation plan as JSON."""
                 if is_retry:
                     verbose_print(f"[ENGINEER] Success on retry attempt {attempt + 1}", prefix="[ENGINEER]")
                 
-                return tool_calls
+                return {"action": "execute", "tool_calls": tool_calls, "reasoning": reasoning}
                 
             except json.JSONDecodeError as e:
                 last_error = f"Invalid JSON: {str(e)}"
@@ -509,7 +566,7 @@ Generate the implementation plan as JSON."""
         
         # All retries exhausted
         verbose_print(f"[ENGINEER] All {self.max_retries} attempts failed. Last error: {last_error}", prefix="[ENGINEER]")
-        return []
+        return {"action": "execute", "tool_calls": [], "reasoning": ""}
     
     def get_state(self) -> EngineerState:
         """Get the current state of the Engineer."""
@@ -546,7 +603,7 @@ Generate the implementation plan as JSON."""
 
 
 # Convenience function for creating an engineer instance
-def create_engineer(project_path: Path, model: str = "llama3.3:latest", max_retries: int = 2, kb_path: Optional[Path] = None) -> EngineerAgent:
+def create_engineer(project_path: Path, model: str = "llama3.3:latest", max_retries: int = 2, kb_path: Optional[Path] = None, max_options: int = 3) -> EngineerAgent:
     """
     Create an Engineer agent instance.
     
@@ -555,9 +612,10 @@ def create_engineer(project_path: Path, model: str = "llama3.3:latest", max_retr
         model: LLM model to use for reasoning
         max_retries: Maximum retry attempts for invalid LLM responses
         kb_path: Path to knowledge base file (optional)
+        max_options: Maximum number of options to execute (0 = execute all)
         
     Returns:
         Configured EngineerAgent instance
     """
-    return EngineerAgent(project_path, model, max_retries, kb_path)
+    return EngineerAgent(project_path, model, max_retries, kb_path, max_options)
 
