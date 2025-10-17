@@ -2,7 +2,7 @@ import argparse
 import configparser
 from pathlib import Path
 from dotenv import load_dotenv, find_dotenv
-from src.tinker import start_analysis
+from src import tinker.start_analysis
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Firmware input and log output.")
@@ -21,12 +21,10 @@ def parse_arguments() -> argparse.Namespace:
     args = parser.parse_args()
 
     firmware_path = Path(args.fw)
-    firmware_name = firmware_path.stem.split(".")[0]
-    log_path = Path(args.log) if args.log else Path("logs") / f"{firmware_name}.log"
+    log_path = Path(args.log) if args.log else Path("logs") / f"{firmware_path.stem}.log"
     config_path = Path(args.config)
 
     args.fw = firmware_path
-    args.fw_name = firmware_name
     args.log = log_path
     args.config = config_path
     return args
@@ -43,9 +41,10 @@ def main() -> None:
     load_dotenv(find_dotenv(usecwd=True))
     args = parse_arguments()
     config = load_config(args.config)
-    args.penguin_proj = Path(f"{config['Penguin']['output_dir']}/{args.fw_name}")
-    print(f"FW: {args.fw}, Log: {args.log}, Model: {config['Ollama']['model']}")
-    start_analysis(config, args)
+    print(f"FW: {args.fw} Log: {args.log} Model: {config['Ollama']['model']}")
+    print(args.fw.stem)
+    exit(0)
+    tinker.start_analysis(config, args)
 
 if __name__ == "__main__":
     main()
