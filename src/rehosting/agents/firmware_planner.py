@@ -32,12 +32,12 @@ class FirmwarePlannerAgent:
     - Penguin configuration format (YAML)
     - Common firmware rehosting issues (missing env vars, failed peripherals, etc.)
     - Architecture-specific requirements (ARM, MIPS, x86)
-    - Configuration sections: target, patches, hyperfiles, network
+    - Configuration sections: core, patches, env, pseudofiles, nvram, netdevs
     """
     
     # Override schema for firmware configuration plans
     EXPECTED_RESPONSE_SCHEMA = {
-        "id": "fw_config_plan_001",
+        "id": "fw_plan_<unique_id>",
         "objectives": [
             "Fix missing environment variables",
             "Model failed peripheral devices"
@@ -45,17 +45,19 @@ class FirmwarePlannerAgent:
         "options": [
             {
                 "option_id": "1",
-                "description": "Add missing PATH environment variable",
-                "action": "update_config",
-                "tool": "yaml_editor",
-                "params": {
-                    "file": "config.yaml",
-                    "path": "hyperfiles./proc/self/environ",
-                    "value": "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-                    "reason": "env_missing.yaml indicates PATH is required"
-                },
-                "priority": "high",
-                "impact": "critical"
+                "description": "<description of the option>",
+                "problem": "<problem identified from the rehosting results>",
+                "solution": "<solution to the problem>",
+                "priority": "<priority level>",
+                "impact": "<impact level>"
+            },
+            {
+                "option_id": "2",
+                "description": "<description of the option>",
+                "problem": "<problem identified from the rehosting results>",
+                "solution": "<solution to the problem>",
+                "priority": "<priority level>",
+                "impact": "<impact level>"
             }
         ]
     }
@@ -67,68 +69,103 @@ Your role is to analyze firmware rehosting results and generate configuration up
 
 ## Penguin Configuration Structure (YAML)
 
-1. **target**: Architecture and entry point settings
-   - arch: ARM, MIPS, x86, etc.
-   - entry_point: Firmware entry address
-   - memory_regions: Memory mapping
+The Penguin config.yaml file contains several key sections for firmware rehosting:
 
-2. **patches**: Code modifications
-   - root_shell: Enable shell access
-   - auto_explore: Automatic exploration
-   - lib_inject: Library injection
-   - static.shims.*: Static shimming
+### 1. **core**: General rehosting parameters
+   - `fs`: Path to filesystem archive (e.g., `./base/fs.tar.gz`)
+   - `plugin_path`: Path to Python plugins directory
+   - `root_shell`: Enable/disable root shell access
+   - `strace`: Enable/disable system call tracing
+   - `ltrace`: Enable/disable library call tracing
+   - `force_www`: Force web server detection
+   - `show_output`: Show execution output
+   - `immutable`: Make filesystem immutable
+   - `network`: Enable/disable network emulation
+   - `version`: Penguin configuration version
+   - `auto_patching`: Enable automatic patching
+   - `guest_cmd`: Enable guest command execution
+   - `mem`: Memory allocation (e.g., `2G`)
+   - `kernel_quiet`: Suppress kernel messages
 
-3. **hyperfiles**: File system mocking
-   - Model files the firmware expects
-   - Provide missing /proc, /sys entries
+### 2. **patches**: Penguin's built-in patches (DO NOT MODIFY)
+   - These are predefined patches that don't require updates during rehosting
+   - Examples: `static_patches/base.yaml`, `static_patches/manual.yaml`
+   - Includes patches for: netdevs, pseudofiles, lib_inject, static files, shims, nvram
+   - **Important**: These patches are automatically applied and should not be modified
 
-4. **network**: Network configuration
-   - Interfaces, IP addresses
-   - Port bindings
+### 3. **env**: Environment variables (MAIN TARGET FOR UPDATES)
+   - Contains environment variables that the firmware expects
+   - May need patching with expected values during rehosting
+   - Example: `sxid: DYNVALDYNVALDYNVAL` (placeholder for dynamic discovery)
+   - Can include nested structures like `target.memory_regions[0].env_vars`   
+   - **Important**: If you see candidates in `env_cmp.txt`, this means dynamic analysis found candidate values for environment variables. This is at the HIGHEST priority. -
+   - For patching environment variables, you should INCLUDE the value to update in the `solution` field. This value will be used by the engineer to update the environment variable.
+   
+   
+### 4. **pseudofiles**: Model missing files/devices (MAIN TARGET FOR UPDATES)
+   - Dictionary structure where filepath is the key
+   - Models files the firmware expects but are missing
+   - Examples: `/dev/dsa`, `/proc/cpuinfo`, `/sys/class/net/eth0`
+   - Can include device-specific configurations (e.g., MTD device names)
+   - **Structure**: `pseudofiles: { "/dev/dsa": { "ioctl": { "*": { "model": "return_const", "val": 0 } } } }`
+
+### 5. **Other sections** (less commonly modified):
+   - `nvram`: NVRAM configuration
+   - `netdevs`: Network device configurations
+   - `blocked_signals`: Signals to block
+   - `lib_inject`: Library injection settings
+   - `static_files`: Static file configurations
+   - `plugins`: Plugin configurations
 
 ## Common Issues and Solutions
 
 ### Missing Environment Variables
-- Issue: env_missing.yaml shows missing vars
-- Solution: Add to hyperfiles or patches to inject
+- **Issue**: `env_missing.yaml` shows missing environment variables
+- **Solution**: Add variables to `env` section with appropriate values
+- **Priority**: HIGH - especially if `env_cmp.txt` contains candidate values
 
-### Peripheral Failures  
-- Issue: pseudofiles_failures.yaml shows unmodeled devices
-- Solution: Add hyperfile models for the devices
+### Missing Device Files
+- **Issue**: `pseudofiles_failures.yaml` shows unmodeled devices
+- **Solution**: Add device models to `pseudofiles` section
+- **Priority**: HIGH - critical for device-dependent firmware
 
-### Network Binding Failures
-- Issue: netbinds.csv shows failed bindings
-- Solution: Update network config, add port mappings
+### Network Configuration Issues
+- **Issue**: Network binding failures or missing network interfaces
+- **Solution**: Update `netdevs` section or add network-related pseudofiles
+- **Priority**: MEDIUM - depends on firmware's network requirements
 
 ### Execution Crashes
-- Issue: Console shows segfaults, crashes
-- Solution: 
-  * Check entry point correctness
-  * Add memory region mappings
-  * Enable relevant patches (root_shell, lib_inject)
+- **Issue**: Console shows segfaults, crashes, or kernel panics
+- **Solution**: 
+  * Check `core` section parameters (memory, patches)
+  * Add missing pseudofiles for critical devices
+  * Verify environment variables are properly set
+- **Priority**: CRITICAL - prevents firmware from running
 
 ## Your Task
 
 Given rehosting results, create a plan with:
 1. Clear objectives (what needs to be fixed)
-2. List of configuration update options for prioritization
-3. Specific YAML paths and values to modify
-4. Each option should include:
+2. List of problems and their solutions for prioritization
+3. Each option should include:
    - option_id: Sequential identifier
-   - description: What this option does
-   - action: Type of action (update_config, add_patch, create_hyperfile)
-   - tool: Tool to use (yaml_editor, patch_manager, hyperfile_builder)
-   - params: Specific parameters including file, path, value, reason
+   - description: Brief summary of what needs to be done
+   - problem: Specific problem identified from the rehosting results
+   - solution: High-level solution approach
    - priority: critical/high/medium/low
    - impact: Expected impact level
+
+Focus on identifying the root causes of failures and suggesting appropriate solutions without specifying implementation details.
 
 ## Option Prioritization
 
 Assign priority levels to help evaluator/engineer prioritize:
-- **critical**: Must-fix issues (crashes, missing core dependencies)
-- **high**: Important fixes (missing env vars, failed peripherals)
+- **critical**: Must-fix issues (crashes, missing core dependencies, kernel panics)
+- **high**: Important fixes (missing env vars with candidates, failed peripherals)
 - **medium**: Nice-to-have improvements (network config, optional peripherals)
 - **low**: Optimization or minor enhancements
+
+**IMPORTANT**: If we see candidates in `env_cmp.txt`, this means dynamic analysis found candidate values for environment variables. This is at the HIGHEST priority. Include the value to update in the `solution` field.
 
 Your output MUST be valid JSON matching the expected schema provided.
 
@@ -142,8 +179,7 @@ You MUST output ONLY valid JSON that EXACTLY matches this schema:
 REQUIREMENTS FOR FIRMWARE CONFIGURATION PLANS:
 - Output ONLY the JSON object, no explanations or markdown
 - Required fields: id, objectives, options
-- Each option MUST have: option_id, description, action, tool, params, priority, impact
-- params MUST include: file, path, value, reason
+- Each option MUST have: option_id, description, problem, solution, priority, impact
 - priority values: critical, high, medium, low
 - Do NOT wrap the JSON in markdown code blocks
 - Do NOT add any text before or after the JSON
@@ -248,14 +284,10 @@ Generate the firmware configuration plan again, following the schema EXACTLY."""
         for i, option in enumerate(plan_data["options"]):
             if not isinstance(option, dict):
                 raise ValueError(f"Option {i} must be a dictionary")
-            option_required = ["option_id", "description", "action", "tool", "params", "priority"]
+            option_required = ["option_id", "description", "problem", "solution", "priority"]
             option_missing = [field for field in option_required if field not in option]
             if option_missing:
                 raise KeyError(f"Option {i} missing required fields: {', '.join(option_missing)}")
-            
-            # Validate params structure
-            if not isinstance(option["params"], dict):
-                raise ValueError(f"Option {i} 'params' must be a dictionary")
             
             # Validate priority values
             valid_priorities = ["critical", "high", "medium", "low"]
@@ -270,12 +302,40 @@ Generate the firmware configuration plan again, following the schema EXACTLY."""
             raise ValueError(f"Failed to instantiate firmware plan schema: {str(e)}")
     
     def _build_context(self, state: State) -> str:
-        """Build contextual information from state, enriched with KB insights."""
+        """Build contextual information from state, enriched with KB insights and previous execution context."""
         context_parts = []
         
         if state.rag_context:
             context_parts.append("## Retrieved Context:")
             context_parts.extend(state.rag_context)
+        
+        # Add previous execution context if available
+        if hasattr(state, 'previous_actions') and state.previous_actions:
+            context_parts.append("\n## Previous Execution History:")
+            context_parts.append(f"Total previous actions: {len(state.previous_actions)}")
+            
+            # Group actions by iteration/option for better readability
+            for i, action in enumerate(state.previous_actions[-10:], 1):  # Show last 10 actions
+                context_parts.append(f"\nPrevious Action {i}:")
+                context_parts.append(f"  Step ID: {action.step_id}")
+                context_parts.append(f"  Tool: {action.tool}")
+                context_parts.append(f"  Status: {action.status}")
+                context_parts.append(f"  Summary: {action.summary}")
+                if action.input:
+                    context_parts.append(f"  Parameters: {action.input}")
+        
+        if hasattr(state, 'previous_engineer_summary') and state.previous_engineer_summary:
+            context_parts.append("\n## Previous Engineer Summary:")
+            if isinstance(state.previous_engineer_summary, list):
+                for i, summary in enumerate(state.previous_engineer_summary[-3:], 1):  # Show last 3 summaries
+                    context_parts.append(f"\nSummary {i}:")
+                    if isinstance(summary, dict):
+                        for key, value in summary.items():
+                            context_parts.append(f"  {key}: {value}")
+                    else:
+                        context_parts.append(f"  {summary}")
+            else:
+                context_parts.append(f"  {state.previous_engineer_summary}")
         
         # Query Knowledge Base for strategic insights (if enabled)
         symptoms = self._extract_symptoms(state.rag_context)
@@ -285,20 +345,17 @@ Generate the firmware configuration plan again, following the schema EXACTLY."""
             if kb_insights:
                 context_parts.append("\n## Knowledge Base Insights:")
                 for insight in kb_insights:
-                    context_parts.append(f"- Issue: {insight['issue']}")
+                    context_parts.append(f"- Issue: {insight['title']}")
                     context_parts.append(f"  Severity: {insight['severity']}")
-                    context_parts.append(f"  Priority: {insight['priority']}")
-                    context_parts.append(f"  Impact: {insight['impact']}")
-                    context_parts.append(f"  Description: {insight['description']}")
+                    context_parts.append(f"  Priority: {insight.get('priority', 'medium')}")
+                    context_parts.append(f"  Impact: {insight.get('impact', 'medium')}")
+                    context_parts.append(f"  Description: {insight.get('description', '')}")
                     
-                    # Add specific guidance from KB
-                    issue_details = self.kb.get_issue_details(insight['issue_id'])
-                    if issue_details:
-                        planner_view = issue_details['solutions']['planner_view']
-                        if planner_view.get('requires_rerun'):
-                            context_parts.append(f"  ⚠️  Requires iteration: {planner_view.get('next_steps', 'Re-run needed')}")
-                        if planner_view.get('selection_criteria'):
-                            context_parts.append(f"  Selection: {planner_view['selection_criteria']}")
+                    # Add specific guidance from complete planner_view
+                    if insight.get('requires_rerun'):
+                        context_parts.append(f"  ⚠️  Requires iteration: {insight.get('next_steps', 'Re-run needed')}")
+                    if insight.get('selection_criteria'):
+                        context_parts.append(f"  Selection: {insight['selection_criteria']}")
                     context_parts.append("")
                 
                 if is_verbose():
@@ -308,7 +365,7 @@ Generate the firmware configuration plan again, following the schema EXACTLY."""
         
         if is_verbose():
             verbose_print("=" * 70)
-            verbose_print("CONTEXT BUILT FOR LLM (with KB)", prefix="[PLANNER]")
+            verbose_print("CONTEXT BUILT FOR LLM (with KB + Previous Execution)", prefix="[PLANNER]")
             verbose_print("=" * 70)
             verbose_print(f"\n{context}\n")
             verbose_print("=" * 70)
@@ -429,17 +486,9 @@ Expected JSON Schema:
             "options": [
                 {
                     "option_id": "1",
-                    "description": f"Failed to parse LLM response after {self.max_retries} attempts: {error}",
-                    "action": "manual_review",
-                    "tool": "human",
-                    "params": {
-                        "raw_response": response[:500],
-                        "error": error,
-                        "file": "config.yaml",
-                        "path": "manual_review_required",
-                        "value": "see_error_details",
-                        "reason": "LLM response parsing failed"
-                    },
+                    "description": f"Failed to parse LLM response after {self.max_retries} attempts",
+                    "problem": f"LLM response parsing failed: {error}",
+                    "solution": "Manual review and intervention required",
                     "priority": "critical",
                     "impact": "requires_manual_intervention"
                 }

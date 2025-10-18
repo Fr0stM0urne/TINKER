@@ -12,4 +12,8 @@ class State(BaseModel):
     rag_context: List[str] = Field(default_factory=list, description="Context from Penguin results")
     budget: Dict[str, Any] = Field(default_factory=dict, description="Resource constraints")
     done: bool = Field(default=False, description="Whether the task is complete")
+    
+    # Optional fields for previous execution context (added dynamically)
+    previous_actions: Optional[List[Any]] = Field(default=None, description="Previous execution actions")
+    previous_engineer_summary: Optional[List[Any]] = Field(default=None, description="Previous engineer summaries")
 

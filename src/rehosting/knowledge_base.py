@@ -37,30 +37,28 @@ class KnowledgeBase:
                     "requires_rerun": True
                 },
                 "engineer_view": {
-                    "tool": "yaml_editor",
-                    "action": "update_config",
+                    "tool": "add_environment_variable_placeholder",
+                    "action": "add_environment_variable_placeholder",
                     "examples": [
                         {
                             "params": {
-                                "file": "config.yaml",
+                                "name": "sxid",
                                 "path": "env.sxid",
-                                "value": "DYNVALDYNVALDYNVAL",
-                                "reason": "Magic value for dynamic detection - will be compared against in next run to find real value"
+                                "reason": "Missing environment variable detected in logs - using magic value for dynamic discovery"
                             }
                         }
                     ],
                     "notes": [
-                        "Set variable to magic value: DYNVALDYNVALDYNVAL",
+                        "Use add_environment_variable_placeholder to set magic value: DYNVALDYNVALDYNVAL",
                         "Re-run Penguin to collect env_cmp.txt",
                         "Check env_cmp.txt for candidate values",
-                        "This is an iterative step - requires follow-up action"
+                        "This is an iterative step - requires follow-up rehosting attempt to find the actual value from the results"
                     ]
                 }
             }
-        },
-        
+        }, 
         "missing_env_var_found_candidates": {
-            "title": "Missing Environment Variable - Candidates Found (Step 2: Apply Value)",
+            "title": "Missing Environment Variable - Candidates Found (Step 2: Apply Value After Dynamic Analysis Has Found the Actual Value)",
             "severity": "high",
             "symptoms": [
                 "env_cmp.txt contains candidate values",
@@ -71,19 +69,19 @@ class KnowledgeBase:
                 "planner_view": {
                     "priority": "high",
                     "impact": "critical",
-                    "description": "Candidate values found via dynamic analysis. Select and apply one.",
+                    "description": "Candidate values found via dynamic analysis. Select and apply one. If we see candidates in env_cmp.txt, this action is at the highest priority.",
                     "selection_criteria": "Usually first non-empty candidate is correct",
                     "requires_rerun": True
                 },
                 "engineer_view": {
-                    "tool": "yaml_editor",
-                    "action": "update_config",
+                    "tool": "set_environment_variable_value",
+                    "action": "set_environment_variable_value",
                     "examples": [
                         {
                             "params": {
-                                "file": "config.yaml",
+                                "name": "sxid",
                                 "path": "env.sxid",
-                                "value": "0150_5MS-MDM-1",
+                                "value": "<actual_value_from_env_cmp.txt>",
                                 "reason": "Candidate value from env_cmp.txt - replacing magic value with actual value"
                             }
                         }
@@ -91,7 +89,7 @@ class KnowledgeBase:
                     "notes": [
                         "Read env_cmp.txt from latest results directory",
                         "Pick first valid candidate (non-empty, non-garbage)",
-                        "Replace magic value with selected candidate",
+                        "Use set_environment_variable_value to replace magic value with selected candidate",
                         "Re-run to verify new errors appear (progress indicator)",
                         "Compare console.log differences to confirm progress"
                     ]
@@ -208,22 +206,22 @@ class KnowledgeBase:
             symptoms: List of observed symptoms/issues
             
         Returns:
-            List of issues with priority, impact, descriptions
+            List of complete planner_view information for matched issues
         """
         results = []
         
         for issue_id, issue_data in self.issues.items():
             # Check if symptoms match
             if self._symptoms_match(symptoms, issue_data["symptoms"]):
-                planner_info = issue_data["solutions"]["planner_view"]
-                results.append({
-                    "issue": issue_data["title"],
+                # Return the complete planner_view plus issue metadata
+                planner_view = issue_data["solutions"]["planner_view"].copy()
+                planner_view.update({
+                    "issue_id": issue_id,
+                    "title": issue_data["title"],
                     "severity": issue_data["severity"],
-                    "priority": planner_info.get("priority", "medium"),
-                    "impact": planner_info.get("impact", "medium"),
-                    "description": planner_info.get("description", ""),
-                    "issue_id": issue_id
+                    "symptoms": issue_data["symptoms"]
                 })
+                results.append(planner_view)
         
         return results
     
@@ -236,20 +234,33 @@ class KnowledgeBase:
             issue_id: Known issue ID (if available)
             
         Returns:
-            List of implementation examples with tools and parameters
+            List of complete engineer_view information for matched issues
         """
         results = []
         
-        # If issue_id provided, get specific examples
+        # If issue_id provided, get specific engineer_view
         if issue_id and issue_id in self.issues:
-            engineer_view = self.issues[issue_id]["solutions"]["engineer_view"]
-            return engineer_view.get("examples", [])
+            engineer_view = self.issues[issue_id]["solutions"]["engineer_view"].copy()
+            engineer_view.update({
+                "issue_id": issue_id,
+                "title": self.issues[issue_id]["title"],
+                "severity": self.issues[issue_id]["severity"],
+                "symptoms": self.issues[issue_id]["symptoms"]
+            })
+            return [engineer_view]
         
         # Otherwise, search based on objective keywords
         for issue_id, issue_data in self.issues.items():
             if self._objective_matches(objective, issue_data):
-                engineer_view = issue_data["solutions"]["engineer_view"]
-                results.extend(engineer_view.get("examples", []))
+                # Return the complete engineer_view plus issue metadata
+                engineer_view = issue_data["solutions"]["engineer_view"].copy()
+                engineer_view.update({
+                    "issue_id": issue_id,
+                    "title": issue_data["title"],
+                    "severity": issue_data["severity"],
+                    "symptoms": issue_data["symptoms"]
+                })
+                results.append(engineer_view)
         
         return results
     

@@ -188,9 +188,12 @@ class ConfigToolRegistry:
                 "changes": {}
             }
     
-    def add_environment_variable(self, name: str, reason: str) -> Dict[str, Any]:
+    def add_environment_variable_placeholder(self, name: str, reason: str) -> Dict[str, Any]:
         """
-        Add a new environment variable (boot argument) to the Penguin config.yaml.
+        Add a new environment variable with a magic placeholder value for dynamic discovery.
+        
+        This sets a placeholder value (DYNVALDYNVALDYNVAL) for dynamic discovery. Use 
+        set_environment_variable_value to set the actual value once discovered.
         
         Never change the igloo_init env var.
         The env var name argument you provide must be one that see you indication is missing.
@@ -224,6 +227,42 @@ class ConfigToolRegistry:
             return {
                 "status": "failed",
                 "message": f"Error adding environment variable: {e}",
+                "changes": {}
+            }
+    
+    def set_environment_variable_value(self, name: str, value: str, reason: str) -> Dict[str, Any]:
+        """
+        Set the actual value for an environment variable that was previously added with a placeholder.
+        
+        Use this after dynamic discovery has found the real value.
+        """
+        try:
+            if name == "igloo_init":
+                return {
+                    "status": "failed",
+                    "message": "Cannot modify igloo_init environment variable",
+                    "changes": {}
+                }
+            
+            # Set the actual value
+            self._set_nested_value(f"env.{name}", value)
+            
+            if self._save_config():
+                return {
+                    "status": "success",
+                    "message": f"Set environment variable {name} = {value}",
+                    "changes": {"env_var": name, "value": value}
+                }
+            else:
+                return {
+                    "status": "failed",
+                    "message": "Failed to save config",
+                    "changes": {}
+                }
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": f"Error setting environment variable value: {e}",
                 "changes": {}
             }
     
@@ -289,13 +328,24 @@ class ConfigToolRegistry:
             # Ensure pseudofiles section exists
             self._ensure_section("pseudofiles")
             
-            # Add pseudofile entry
-            pseudofile_entry = {
-                "path": filepath,
-                "name": name if filepath.startswith("/dev/mtd") else None
-            }
+            # Check if pseudofile already exists
+            if filepath in self.config.get("pseudofiles", {}):
+                return {
+                    "status": "failed",
+                    "message": f"Pseudofile {filepath} already exists",
+                    "changes": {}
+                }
             
-            self._add_to_list("pseudofiles", pseudofile_entry)
+            # Create pseudofile entry as a dictionary
+            pseudofile_entry = {}
+            if filepath.startswith("/dev/mtd") and name:
+                pseudofile_entry["name"] = name
+            
+            # Add pseudofile entry to the dictionary structure
+            if "pseudofiles" not in self.config:
+                self.config["pseudofiles"] = {}
+            
+            self.config["pseudofiles"][filepath] = pseudofile_entry
             
             if self._save_config():
                 return {
@@ -321,24 +371,22 @@ class ConfigToolRegistry:
         Remove a pseudofile from the Penguin config.yaml.
         """
         try:
-            # Find and remove pseudofile
-            pseudofiles = self._get_nested_value("pseudofiles") or []
-            if isinstance(pseudofiles, list):
-                for i, pf in enumerate(pseudofiles):
-                    if isinstance(pf, dict) and pf.get("path") == filepath:
-                        pseudofiles.pop(i)
-                        if self._save_config():
-                            return {
-                                "status": "success",
-                                "message": f"Removed pseudofile {filepath}",
-                                "changes": {"removed_pseudofile": filepath}
-                            }
-                        else:
-                            return {
-                                "status": "failed",
-                                "message": "Failed to save config",
-                                "changes": {}
-                            }
+            # Check if pseudofiles section exists and contains the filepath
+            pseudofiles = self.config.get("pseudofiles", {})
+            if filepath in pseudofiles:
+                del pseudofiles[filepath]
+                if self._save_config():
+                    return {
+                        "status": "success",
+                        "message": f"Removed pseudofile {filepath}",
+                        "changes": {"removed_pseudofile": filepath}
+                    }
+                else:
+                    return {
+                        "status": "failed",
+                        "message": "Failed to save config",
+                        "changes": {}
+                    }
             
             return {
                 "status": "failed",
@@ -367,25 +415,23 @@ class ConfigToolRegistry:
                 }
             
             # Find pseudofile and update its read behavior
-            pseudofiles = self._get_nested_value("pseudofiles") or []
-            if isinstance(pseudofiles, list):
-                for pf in pseudofiles:
-                    if isinstance(pf, dict) and pf.get("path") == filepath:
-                        pf["read_model"] = model
-                        if model == "const_buf":
-                            pf["read_value"] = value
-                        if self._save_config():
-                            return {
-                                "status": "success",
-                                "message": f"Set read behavior for {filepath} to {model}",
-                                "changes": {"filepath": filepath, "read_model": model, "value": value}
-                            }
-                        else:
-                            return {
-                                "status": "failed",
-                                "message": "Failed to save config",
-                                "changes": {}
-                            }
+            pseudofiles = self.config.get("pseudofiles", {})
+            if filepath in pseudofiles:
+                pseudofiles[filepath]["read_model"] = model
+                if model == "const_buf":
+                    pseudofiles[filepath]["read_value"] = value
+                if self._save_config():
+                    return {
+                        "status": "success",
+                        "message": f"Set read behavior for {filepath} to {model}",
+                        "changes": {"filepath": filepath, "read_model": model, "value": value}
+                    }
+                else:
+                    return {
+                        "status": "failed",
+                        "message": "Failed to save config",
+                        "changes": {}
+                    }
             
             return {
                 "status": "failed",
@@ -396,90 +442,6 @@ class ConfigToolRegistry:
             return {
                 "status": "failed",
                 "message": f"Error setting file read behavior: {e}",
-                "changes": {}
-            }
-    
-    def set_file_ioctl_behavior(self, filepath: str, ioctl_number: str, model: str, reason: str) -> Dict[str, Any]:
-        """
-        After adding a pseudofile with add_pseudofile(), you can modify the IOCTL model of a pseudofile.
-        
-        Invoke this tool if you want to address read/write/IOCTL failures in pseudofile_failures.txt.
-        This will set read -> 0, write -> discard, IOCTL -> 0.
-        Cannot only model files in /sys, /dev, or /proc.
-        Do not make up any fake arguments. Only call this tool once at a time
-        """
-        try:
-            if model != "return_success":
-                return {
-                    "status": "failed",
-                    "message": "Model must be 'return_success'",
-                    "changes": {}
-                }
-            
-            # Find pseudofile and update its IOCTL behavior
-            pseudofiles = self._get_nested_value("pseudofiles") or []
-            if isinstance(pseudofiles, list):
-                for pf in pseudofiles:
-                    if isinstance(pf, dict) and pf.get("path") == filepath:
-                        pf["ioctl_model"] = model
-                        pf["ioctl_number"] = ioctl_number
-                        pf["read_model"] = "return_zero"
-                        pf["write_model"] = "discard"
-                        if self._save_config():
-                            return {
-                                "status": "success",
-                                "message": f"Set IOCTL behavior for {filepath} to {model}",
-                                "changes": {"filepath": filepath, "ioctl_model": model, "ioctl_number": ioctl_number}
-                            }
-                        else:
-                            return {
-                                "status": "failed",
-                                "message": "Failed to save config",
-                                "changes": {}
-                            }
-            
-            return {
-                "status": "failed",
-                "message": f"Pseudofile {filepath} not found",
-                "changes": {}
-            }
-        except Exception as e:
-            return {
-                "status": "failed",
-                "message": f"Error setting file IOCTL behavior: {e}",
-                "changes": {}
-            }
-    
-    def add_network_interface(self, net_name: str, reason: str) -> Dict[str, Any]:
-        """
-        Add a new network interface name to configure within the guest firmware emulation.
-        
-        The network interface name you provide must be one that you see indication is missing.
-        Do not make up a fake name.
-        """
-        try:
-            # Ensure network section exists
-            self._ensure_section("network")
-            
-            # Add network interface
-            self._add_to_list("network.interfaces", net_name)
-            
-            if self._save_config():
-                return {
-                    "status": "success",
-                    "message": f"Added network interface {net_name}",
-                    "changes": {"network_interface": net_name}
-                }
-            else:
-                return {
-                    "status": "failed",
-                    "message": "Failed to save config",
-                    "changes": {}
-                }
-        except Exception as e:
-            return {
-                "status": "failed",
-                "message": f"Error adding network interface: {e}",
                 "changes": {}
             }
     
@@ -576,13 +538,12 @@ class ConfigToolRegistry:
         """Get tool function by name."""
         tools = {
             "change_init_program": self.change_init_program,
-            "add_environment_variable": self.add_environment_variable,
+            "add_environment_variable_placeholder": self.add_environment_variable_placeholder,
+            "set_environment_variable_value": self.set_environment_variable_value,
             "remove_environment_variable": self.remove_environment_variable,
             "add_pseudofile": self.add_pseudofile,
             "remove_pseudofile": self.remove_pseudofile,
             "set_file_read_behavior": self.set_file_read_behavior,
-            "set_file_ioctl_behavior": self.set_file_ioctl_behavior,
-            "add_network_interface": self.add_network_interface,
             "grep_strace_output": self.grep_strace_output,
             "replace_script_exit0": self.replace_script_exit0,
         }
@@ -592,13 +553,12 @@ class ConfigToolRegistry:
         """List available tool names."""
         return [
             "change_init_program",
-            "add_environment_variable", 
+            "add_environment_variable_placeholder",
+            "set_environment_variable_value",
             "remove_environment_variable",
             "add_pseudofile",
             "remove_pseudofile",
             "set_file_read_behavior",
-            "set_file_ioctl_behavior",
-            "add_network_interface",
             "grep_strace_output",
             "replace_script_exit0",
         ]

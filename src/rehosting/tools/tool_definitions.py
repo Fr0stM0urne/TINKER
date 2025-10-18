@@ -38,9 +38,9 @@ TOOL_DEFINITIONS = {
         strict=True
     ),
     
-    "add_environment_variable": ToolDefinition(
-        name="add_environment_variable",
-        description="Add a new environment variable (boot argument) to the Penguin config.yaml. Will perform a dynamic search for concrete value by running the config, and set it to this value. Never change the igloo_init env var. The env var name argument you provide must be one that see you indication is missing. Do not make up any fake arguments.",
+    "add_environment_variable_placeholder": ToolDefinition(
+        name="add_environment_variable_placeholder",
+        description="Add a new environment variable with a magic placeholder value for dynamic discovery. This sets the variable to 'DYNVALDYNVALDYNVAL' so Penguin can detect what values it's compared against. Never change the igloo_init env var. This function can only be invoked ONCE for each rehosting attempt, even with multiple options. The env var name argument you provide must be one that you see indication is missing. Do not make up any fake arguments.",
         parameters={
             "type": "object",
             "properties": {
@@ -57,6 +57,32 @@ TOOL_DEFINITIONS = {
             "additionalProperties": False
         },
         required=["name", "reason"],
+        strict=True
+    ),
+    
+    "set_environment_variable_value": ToolDefinition(
+        name="set_environment_variable_value",
+        description="Set the actual value for an environment variable that was previously added with a placeholder. Use this after dynamic discovery has found the real value.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The name of the environment variable to update."
+                },
+                "value": {
+                    "type": "string",
+                    "description": "The actual value to set for the environment variable."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "A concise sentence on why you are invoking this tool. What errors/signs did you see, if any?."
+                }
+            },
+            "required": ["name", "value", "reason"],
+            "additionalProperties": False
+        },
+        required=["name", "value", "reason"],
         strict=True
     ),
     
@@ -158,59 +184,6 @@ TOOL_DEFINITIONS = {
             "additionalProperties": False
         },
         required=["filepath", "model", "value", "reason"],
-        strict=True
-    ),
-    
-    "set_file_ioctl_behavior": ToolDefinition(
-        name="set_file_ioctl_behavior",
-        description="After adding a pseudofile with add_pseudofile(), you can modify the IOCTL model of a pseudofile. Invoke this tool if you want to address read/write/IOCTL failures in pseudofile_failures.txt. This will set read -> 0, write -> discard, IOCTL -> 0. Canot only model files in /sys, /dev, or /proc. Do not make up any fake arguments. Only call this tool once at a time",
-        parameters={
-            "type": "object",
-            "properties": {
-                "filepath": {
-                    "type": "string",
-                    "description": "The absolute filepath of the pseudofile. Should be a file in /sys, /dev, or /proc."
-                },
-                "ioctl_number": {
-                    "type": "string",
-                    "description": "IOCTL number to model, or '*' (wildcard) to indicate all ioctls."
-                },
-                "model": {
-                    "type": "string",
-                    "enum": ["return_success"],
-                    "description": "The IOCTL model to set. return_success means return 0"
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "A concise sentence on why you are invoking this tool. What errors/signs did you see, if any?."
-                }
-            },
-            "required": ["filepath", "ioctl_number", "model", "reason"],
-            "additionalProperties": False
-        },
-        required=["filepath", "ioctl_number", "model", "reason"],
-        strict=True
-    ),
-    
-    "add_network_interface": ToolDefinition(
-        name="add_network_interface",
-        description="Add a new network interface name to configure within the guest firmware emulation. The network interface name you provide must be one that you see indication is missing. Do not make up a fake name.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "net_name": {
-                    "type": "string",
-                    "description": "The name of the network interface to add to the system."
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "A concise sentence on why you are invoking this tool. What errors/signs did you see, if any?."
-                }
-            },
-            "required": ["net_name", "reason"],
-            "additionalProperties": False
-        },
-        required=["net_name", "reason"],
         strict=True
     ),
     

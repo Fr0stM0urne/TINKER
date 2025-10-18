@@ -96,6 +96,10 @@ def rehost_firmware(
     print()
 
 
+    # Initialize accumulated execution results for cross-iteration learning
+    accumulated_actions = []
+    accumulated_engineer_summaries = []
+    
     # Main rehosting loop
     for i in range(int(config["Penguin"]["max_iter"])):
         print(f"Max Iterations: {config['Penguin']['max_iter']}, Current Iteration: {i+1}")
@@ -165,6 +169,25 @@ def rehost_firmware(
                 verbose=verbose
             )
             
+            # Add accumulated execution context for learning from previous iterations
+            if i > 0:  # Not the first iteration
+                context_parts.append(f"\n## Previous Iteration Context (Iteration {i}):")
+                context_parts.append(f"Total previous actions: {len(accumulated_actions)}")
+                context_parts.append(f"Total previous engineer summaries: {len(accumulated_engineer_summaries)}")
+                
+                if accumulated_actions:
+                    context_parts.append("\nPrevious Actions Summary:")
+                    for j, action in enumerate(accumulated_actions[-5:], 1):  # Show last 5 actions
+                        context_parts.append(f"  {j}. {action.tool} - {action.status} - {action.summary}")
+                
+                if accumulated_engineer_summaries:
+                    context_parts.append("\nPrevious Engineer Summaries:")
+                    for j, summary in enumerate(accumulated_engineer_summaries[-3:], 1):  # Show last 3 summaries
+                        if isinstance(summary, dict):
+                            context_parts.append(f"  {j}. {summary.get('status', 'unknown')} - {summary.get('message', 'no message')}")
+                        else:
+                            context_parts.append(f"  {j}. {summary}")
+            
             final_state = workflow.run(
                 firmware_path=firmware_path,
                 rag_context=context_parts,
@@ -181,11 +204,16 @@ def rehost_firmware(
                 workflow_state["actions"] = actions
                 workflow_state["engineer_summary"] = engineer_summary
                 
+                # Accumulate results for next iteration
+                accumulated_actions.extend(actions)
+                accumulated_engineer_summaries.extend(engineer_summary)
+                
                 print(f"  ✓ Multi-agent workflow completed")
                 print(f"    Plan ID: {config_plan.id}")
                 print(f"    Objectives: {len(config_plan.objectives)}")
                 print(f"    Options executed: {len(config_plan.options)}")
                 print(f"    Actions completed: {len(actions)}")
+                print(f"    Total accumulated actions: {len(accumulated_actions)}")
                 
                 if is_verbose():
                     verbose_print("=" * 70)
@@ -193,41 +221,58 @@ def rehost_firmware(
                     verbose_print("=" * 70)
                     verbose_print(f"Plan ID: {config_plan.id}", prefix="[WORKFLOW]")
                     verbose_print(f"Total actions: {len(actions)}", prefix="[WORKFLOW]")
+                    verbose_print(f"Accumulated actions: {len(accumulated_actions)}", prefix="[WORKFLOW]")
                     verbose_print(f"Execution done: {final_state.get('done', False)}", prefix="[WORKFLOW]")
                     verbose_print("=" * 70)
             else:
                 workflow_state["errors"].append("Multi-agent workflow failed to generate plan")
-                return workflow_state
+                print(f"  ❌ Multi-agent workflow failed to generate plan (iteration {i+1})")
+                # Continue to next iteration instead of returning
                 
         except Exception as e:
             workflow_state["errors"].append(f"Multi-agent workflow failed: {e}")
+            print(f"  ❌ Multi-agent workflow exception (iteration {i+1}): {e}")
             import traceback
             traceback.print_exc()
-            return workflow_state
+            # Continue to next iteration instead of returning
         print()
-        
-        # TODO: Step 5: Validate with Evaluator (future enhancement)
-        # TODO: Step 6: Run Penguin again to verify improvements (future enhancement)
-        # TODO: Step 7: Iterate until success (future enhancement)
-        
-        print("=" * 70)
-        print("✨ Multi-Agent Workflow Complete")
-        print("=" * 70)
-        print()
-        print("Plan Summary:")
-        print(f"  ID: {config_plan.id}")
+    
+    # Final summary after all iterations
+    print("=" * 70)
+    print("✨ Multi-Agent Workflow Complete")
+    print("=" * 70)
+    print(f"Total iterations completed: {int(config['Penguin']['max_iter'])}")
+    print(f"Total accumulated actions: {len(accumulated_actions)}")
+    print()
+    
+    # Show final plan summary if available
+    final_plan = workflow_state.get("config_update_plan")
+    if final_plan:
+        print("Final Plan Summary:")
+        print(f"  ID: {final_plan.id}")
         print(f"  Objectives:")
-        for i, obj in enumerate(config_plan.objectives, 1):
+        for i, obj in enumerate(final_plan.objectives, 1):
             print(f"    {i}. {obj}")
         print()
-        print("Execution Summary:")
-        for summary_item in engineer_summary:
+    
+    # Show final execution summary if available
+    final_summary = workflow_state.get("engineer_summary", [])
+    if final_summary:
+        print("Final Execution Summary:")
+        for summary_item in final_summary:
             status_icon = "✅" if summary_item.get("status") == "success" else "❌"
             print(f"  {status_icon} {summary_item.get('description', 'N/A')}")
         print()
-        
-        workflow_state["success"] = True
-        return workflow_state
+    
+    # Show any errors that occurred
+    if workflow_state["errors"]:
+        print("Errors encountered:")
+        for error in workflow_state["errors"]:
+            print(f"  ❌ {error}")
+        print()
+    
+    workflow_state["success"] = True
+    return workflow_state
 
 
 def _validate_inputs(firmware_path: str, config: configparser.ConfigParser) -> bool:

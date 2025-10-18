@@ -116,6 +116,7 @@ def get_penguin_results(
         ("console.log", _parse_console_log, True),
         ("env_missing.yaml", _parse_yaml, False),
         ("pseudofiles_failures.yaml", _parse_yaml, False),
+        ("env_cmp.txt", None, False),
         # ("pseudofiles_modeled.yaml", _parse_yaml, False),
         # ("netbinds.csv", _parse_csv, False),
     ]
@@ -156,7 +157,9 @@ def get_penguin_results(
                 except Exception as e:
                     print(f"[Warning] Failed to parse {filename}: {e}")
                     results["parsed"][filename] = None
-        
+            else:
+                results["parsed"][filename] = clean_content
+                
         except Exception as e:
             print(f"[Error] Failed to read {filename}: {e}")
             results["files"][filename] = f"Error reading file: {e}"

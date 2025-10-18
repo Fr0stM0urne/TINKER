@@ -168,12 +168,18 @@ class RehostingWorkflow:
         print("🧠 PLANNER: Analyzing results and generating plan...")
         print("=" * 70)
         
-        # Convert to State object for planner
+        # Convert to State object for planner, including previous execution context
         planner_state = State(
             goal=state["goal"],
             rag_context=state["rag_context"],
             budget=state["budget"]
         )
+        
+        # Add previous execution context for learning from past iterations
+        if state.get("actions"):
+            planner_state.previous_actions = state["actions"]
+        if state.get("engineer_summary"):
+            planner_state.previous_engineer_summary = state["engineer_summary"]
         
         # Call planner (returns {"plan": plan_object})
         updates = self.planner(planner_state)

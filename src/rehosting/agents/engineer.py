@@ -92,13 +92,15 @@ Rules:
 - Use the exact tool names from the available tools list
 - Provide all required parameters for each tool
 - Always include a clear "reason" parameter
-- For environment variables: use add_environment_variable
+- For environment variables that you see are missing: use add_environment_variable_placeholder (for discovery).
+- For environment variables that we have already do dynamic discovery on and get the value from the planner: use set_environment_variable_value (for real values). The value should replace the placeholder magic value i.e., use the same path!
 - For pseudofiles: use add_pseudofile, set_file_read_behavior, set_file_ioctl_behavior
 - For network: use add_network_interface
 - For analysis: use grep_strace_output
 - For scripts: use replace_script_exit0
 - If NO available tool can solve this problem, set "action": "skip" and provide "skip_reason"
 - Only set "action": "execute" if you can actually implement the solution with available tools
+- Only generate ONE action per option.
 - Output ONLY the JSON, no markdown, no explanations outside JSON
 """
 
@@ -429,18 +431,27 @@ Rules:
             try:
                 is_retry = attempt > 0
                 
-                # Query KB for implementation examples (if enabled)
-                kb_examples = self.kb.query_for_engineer(description) if self.kb is not None else []
+                # Query KB for implementation guidance (if enabled)
+                kb_guidance = self.kb.query_for_engineer(description) if self.kb is not None else []
                 
-                # Build prompt with KB examples
+                # Build prompt with KB guidance
                 kb_context = ""
-                if kb_examples:
-                    kb_context = "\n\nKnowledge Base Examples:\n"
-                    for i, example in enumerate(kb_examples[:3], 1):  # Max 3 examples
-                        kb_context += f"\nExample {i}:\n{json.dumps(example, indent=2)}\n"
+                if kb_guidance:
+                    kb_context = "\n\nKnowledge Base Guidance:\n"
+                    for i, guidance in enumerate(kb_guidance[:3], 1):  # Max 3 guidance items
+                        kb_context += f"\nGuidance {i} - {guidance.get('title', 'Unknown Issue')}:\n"
+                        kb_context += f"  Tool: {guidance.get('tool', 'unknown')}\n"
+                        kb_context += f"  Action: {guidance.get('action', 'unknown')}\n"
+                        if 'examples' in guidance and guidance['examples']:
+                            kb_context += f"  Examples:\n"
+                            for j, example in enumerate(guidance['examples'][:2], 1):  # Max 2 examples per guidance
+                                kb_context += f"    Example {j}: {json.dumps(example, indent=4)}\n"
+                        if 'notes' in guidance and guidance['notes']:
+                            kb_context += f"  Notes: {'; '.join(guidance['notes'])}\n"
+                        kb_context += "\n"
                     
                     if is_verbose():
-                        verbose_print(f"[ENGINEER] Added {len(kb_examples)} KB examples to prompt", prefix="[KB]")
+                        verbose_print(f"[ENGINEER] Added {len(kb_guidance)} KB guidance items to prompt", prefix="[KB]")
                 
                 user_prompt = f"""Objective: {description}
 
@@ -536,7 +547,7 @@ Generate the implementation plan as JSON."""
                         verbose_print(f"[ENGINEER] Attempt {attempt + 1} failed: {last_error}")
                         raise ValueError(last_error)
                     
-                    required = ["tool", "action", "params"]
+                    required = ["tool", "params"]
                     missing = [f for f in required if f not in tc]
                     if missing:
                         last_error = f"Tool call {i} missing fields: {missing}"

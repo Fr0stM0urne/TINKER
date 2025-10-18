@@ -1,0 +1,58 @@
+======================================================================
+🔧 TINKER - LLM-Guided Firmware Rehosting System
+======================================================================
+
+✗ Error: Firmware file not found: 
+Use default firmware path: resources/firmware/stride.rootfs.tar.gz
+[Settings] Verbose mode: ENABLED
+🔊 Verbose mode: ENABLED
+
+======================================================================
+🚀 LLM-GUIDED FIRMWARE REHOSTING WORKFLOW
+======================================================================
+
+📋 Validating inputs...
+  ✓ Inputs validated
+
+🤖 Initializing LLM agents...
+  ✓ Planner initialized with model: llama3.3:latest
+
+🐧 Penguin init...
+
+===== Running Penguin INIT =====
+[cmd] ['penguin', '--image', 'rehosting/penguin:v1.4.65', 'init', '--force', 'resources/firmware/stride.rootfs.tar.gz']
+[32m23:54:55[0m [34mpenguin[0m [1;30mINFO[0m penguin v1.4.65
+[32m23:54:55[0m [34mpenguin[0m [1;30mWARNING[0m [33mCurrent penguin file does not match [1;34m/usr/local/src/penguin_wrapper.[0m[0m
+[32m23:54:55[0m [34mpenguin[0m [1;30mWARNING[0m [33mReinstall global penguin from container with "docker run rehosting[1;34m/penguin[0m penguin_install | sudo sh"[0m
+[32m23:54:55[0m [34mpenguin[0m [1;30mWARNING[0m [33mReinstall local penguin from container with "docker run rehosting[1;34m/penguin[0m penguin_install.local | sh"[0m
+[32m23:54:55[0m [34mpenguin[0m [1;30mINFO[0m Note messages referencing [1;34m/host[0m paths reflect automatically-mapped shared directories based on your command line arguments
+[32m23:54:55[0m [34mpenguin[0m [1;30mINFO[0m Creating project at generated path: [1;34m/host_projects/stride[0m
+[32m23:54:55[0m [34mpenguin[0m [1;30mINFO[0m Deleting existing project directory: [1;34m/host_projects/stride[0m
+  [32m23:54:56[0m [34mpenguin.gen_config[0m [1;30mINFO[0m Generating new configuration for [1;34m/host_firmware/stride.rootfs.tar.gz...[0m
+^C
+Aborted!
+Traceback (most recent call last):
+  File "/usr/local/bin/penguin", line 33, in <module>
+    sys.exit(load_entry_point('penguin', 'console_scripts', 'penguin')())
+  File "/pkg/penguin/__main__.py", line 683, in main
+    penguin_init(args)
+  File "/pkg/penguin/__main__.py", line 240, in penguin_init
+    config = fakeroot_gen_config(
+  File "/pkg/penguin/gen_config.py", line 281, in fakeroot_gen_config
+    p.wait()
+  File "/usr/lib/python3.10/subprocess.py", line 1209, in wait
+    return self._wait(timeout=timeout)
+  File "/usr/lib/python3.10/subprocess.py", line 1959, in _wait
+    (pid, sts) = self._try_wait(0)
+  File "/usr/lib/python3.10/subprocess.py", line 1917, in _try_wait
+    (pid, sts) = os.waitpid(self.pid, wait_flags)
+KeyboardInterrupt
+[Mapped] Docker path → Host path: projects/stride
+
+======================================================================
+❌ WORKFLOW FAILED
+======================================================================
+
+Errors:
+  • Penguin init failed
+
