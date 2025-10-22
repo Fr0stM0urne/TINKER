@@ -38,153 +38,102 @@ class FirmwarePlannerAgent:
     # Override schema for firmware configuration plans
     EXPECTED_RESPONSE_SCHEMA = {
         "id": "fw_plan_<unique_id>",
-        "objectives": [
-            "Fix missing environment variables",
-            "Model failed peripheral devices"
-        ],
+        "objectives": ["<objective1>", "<objective2>"],
         "options": [
             {
                 "option_id": "1",
-                "description": "<description of the option>",
-                "problem": "<problem identified from the rehosting results>",
-                "solution": "<solution to the problem>",
-                "priority": "<priority level>",
-                "impact": "<impact level>"
-            },
-            {
-                "option_id": "2",
-                "description": "<description of the option>",
-                "problem": "<problem identified from the rehosting results>",
-                "solution": "<solution to the problem>",
-                "priority": "<priority level>",
-                "impact": "<impact level>"
+                "description": "<brief_summary>",
+                "problem": "<specific_problem>",
+                "solution": "<solution_approach>",
+                "priority": "critical|high|medium|low",
+                "impact": "<expected_impact>",
+                "metadata": {
+                    "variable_name": "<var_name_if_env_var_issue>",
+                    "config_path": "<path_if_applicable>",
+                    "device_path": "<device_path_if_pseudofile>"
+                }
             }
         ]
     }
     
-    # Extended system prompt with firmware-specific knowledge
-    SYSTEM_PROMPT = """You are a firmware rehosting planning agent specialized in Penguin configuration optimization.
-
-Your role is to analyze firmware rehosting results and generate configuration update plans to improve execution success.
-
-## Penguin Configuration Structure (YAML)
-
-The Penguin config.yaml file contains several key sections for firmware rehosting:
-
-### 1. **core**: General rehosting parameters
-   - `fs`: Path to filesystem archive (e.g., `./base/fs.tar.gz`)
-   - `plugin_path`: Path to Python plugins directory
-   - `root_shell`: Enable/disable root shell access
-   - `strace`: Enable/disable system call tracing
-   - `ltrace`: Enable/disable library call tracing
-   - `force_www`: Force web server detection
-   - `show_output`: Show execution output
-   - `immutable`: Make filesystem immutable
-   - `network`: Enable/disable network emulation
-   - `version`: Penguin configuration version
-   - `auto_patching`: Enable automatic patching
-   - `guest_cmd`: Enable guest command execution
-   - `mem`: Memory allocation (e.g., `2G`)
-   - `kernel_quiet`: Suppress kernel messages
-
-### 2. **patches**: Penguin's built-in patches (DO NOT MODIFY)
-   - These are predefined patches that don't require updates during rehosting
-   - Examples: `static_patches/base.yaml`, `static_patches/manual.yaml`
-   - Includes patches for: netdevs, pseudofiles, lib_inject, static files, shims, nvram
-   - **Important**: These patches are automatically applied and should not be modified
-
-### 3. **env**: Environment variables (MAIN TARGET FOR UPDATES)
-   - Contains environment variables that the firmware expects
-   - May need patching with expected values during rehosting
-   - Example: `sxid: DYNVALDYNVALDYNVAL` (placeholder for dynamic discovery)
-   - Can include nested structures like `target.memory_regions[0].env_vars`   
-   - **Important**: If you see candidates in `env_cmp.txt`, this means dynamic analysis found candidate values for environment variables. This is at the HIGHEST priority. -
-   - For patching environment variables, you should INCLUDE the value to update in the `solution` field. This value will be used by the engineer to update the environment variable.
-   
-   
-### 4. **pseudofiles**: Model missing files/devices (MAIN TARGET FOR UPDATES)
-   - Dictionary structure where filepath is the key
-   - Models files the firmware expects but are missing
-   - Examples: `/dev/dsa`, `/proc/cpuinfo`, `/sys/class/net/eth0`
-   - Can include device-specific configurations (e.g., MTD device names)
-   - **Structure**: `pseudofiles: { "/dev/dsa": { "ioctl": { "*": { "model": "return_const", "val": 0 } } } }`
-
-### 5. **Other sections** (less commonly modified):
-   - `nvram`: NVRAM configuration
-   - `netdevs`: Network device configurations
-   - `blocked_signals`: Signals to block
-   - `lib_inject`: Library injection settings
-   - `static_files`: Static file configurations
-   - `plugins`: Plugin configurations
-
-## Common Issues and Solutions
-
-### Missing Environment Variables
-- **Issue**: `env_missing.yaml` shows missing environment variables
-- **Solution**: Add variables to `env` section with appropriate values
-- **Priority**: HIGH - especially if `env_cmp.txt` contains candidate values
-
-### Missing Device Files
-- **Issue**: `pseudofiles_failures.yaml` shows unmodeled devices
-- **Solution**: Add device models to `pseudofiles` section
-- **Priority**: HIGH - critical for device-dependent firmware
-
-### Network Configuration Issues
-- **Issue**: Network binding failures or missing network interfaces
-- **Solution**: Update `netdevs` section or add network-related pseudofiles
-- **Priority**: MEDIUM - depends on firmware's network requirements
-
-### Execution Crashes
-- **Issue**: Console shows segfaults, crashes, or kernel panics
-- **Solution**: 
-  * Check `core` section parameters (memory, patches)
-  * Add missing pseudofiles for critical devices
-  * Verify environment variables are properly set
-- **Priority**: CRITICAL - prevents firmware from running
+    # System prompt - contains all instructions and guidelines
+    SYSTEM_PROMPT = """You are a firmware rehosting planner analyzing Penguin configuration issues.
 
 ## Your Task
+Analyze the provided goal, context, and constraints, then create a comprehensive plan to achieve the goal. Output the plan in JSON format following the schema provided at the end.
 
-Given rehosting results, create a plan with:
-1. Clear objectives (what needs to be fixed)
-2. List of problems and their solutions for prioritization
-3. Each option should include:
-   - option_id: Sequential identifier
-   - description: Brief summary of what needs to be done
-   - problem: Specific problem identified from the rehosting results
-   - solution: High-level solution approach
-   - priority: critical/high/medium/low
-   - impact: Expected impact level
+## Key Configuration Targets
 
-Focus on identifying the root causes of failures and suggesting appropriate solutions without specifying implementation details.
+**env** (environment variables): Main focus if env_missing.yaml or env_cmp.txt present
+**pseudofiles** (device files): Add if pseudofiles_failures.yaml shows missing devices
+**core/patches**: Rarely modified (auto-handled)
 
-## Option Prioritization
+## Common Patterns
 
-Assign priority levels to help evaluator/engineer prioritize:
-- **critical**: Must-fix issues (crashes, missing core dependencies, kernel panics)
-- **high**: Important fixes (missing env vars with candidates, failed peripherals)
-- **medium**: Nice-to-have improvements (network config, optional peripherals)
-- **low**: Optimization or minor enhancements
+1. **Missing env vars WITHOUT known values**: Add ONE placeholder for discovery (⚠️ only ONE per cycle)
+2. **Missing devices**: Add pseudofile entries for /dev/*, /proc/*, /sys/* paths
+3. **Crashes/panics**: Check env vars and device dependencies first
 
-**IMPORTANT**: If we see candidates in `env_cmp.txt`, this means dynamic analysis found candidate values for environment variables. This is at the HIGHEST priority. Include the value to update in the `solution` field.
+## Discovery Constraint
+⚠️ CRITICAL: Only ONE environment variable can use placeholder (DYNVALDYNVALDYNVAL) per rehosting cycle. If multiple unknowns exist, prioritize the most critical ONE.
 
-Your output MUST be valid JSON matching the expected schema provided.
+## Important Notes
+- **metadata field**: Include structured data for Engineer (e.g., variable_name="sxid", config_path="env.sxid" for env vars, or device_path="/dev/mtd1" for pseudofiles). Omit fields not applicable. IMPORTANT: Don't add metadata if not relevant to the option!
+- Priority levels: critical (crashes) > high (missing critical data) > medium (nice-to-have) > low (optimization)
+- Output ONLY valid JSON, no markdown."""
 
-Focus on generating actionable configuration options with clear priorities."""
-
-    RETRY_SYSTEM_PROMPT = """CRITICAL: Your previous response did NOT follow the required JSON schema format for firmware configuration plans.
-
-You MUST output ONLY valid JSON that EXACTLY matches this schema:
+    RETRY_SYSTEM_PROMPT = """Your previous response was invalid JSON. Output ONLY valid JSON matching this schema:
 {schema}
 
-REQUIREMENTS FOR FIRMWARE CONFIGURATION PLANS:
-- Output ONLY the JSON object, no explanations or markdown
-- Required fields: id, objectives, options
-- Each option MUST have: option_id, description, problem, solution, priority, impact
-- priority values: critical, high, medium, low
-- Do NOT wrap the JSON in markdown code blocks
-- Do NOT add any text before or after the JSON
+Required: id, objectives (array), options (array with option_id, description, problem, solution, priority, impact)
+No markdown, no explanations, just the JSON object."""
 
-Generate the firmware configuration plan again, following the schema EXACTLY."""
+    DISCOVERY_MODE_PROMPT = """🔍 DISCOVERY MODE: Resolve environment variable with discovered value
+
+## What is Discovery Mode?
+In the previous iteration, you added a placeholder environment variable with value "DYNVALDYNVALDYNVAL" to discover its actual value at runtime. The firmware has now run with this placeholder, and Penguin captured candidate values in env_cmp.txt by monitoring string comparisons.
+
+## Your Task
+Analyze env_cmp.txt results for variable "{variable_name}" and create a plan to either:
+1. **Apply the discovered value** (if env_cmp.txt has candidates)
+2. **Remove the placeholder** (if env_cmp.txt is empty - discovery failed)
+
+⚠️ **CRITICAL**: Generate EXACTLY ONE option in your plan. No multiple options in discovery mode.
+
+## Output Format
+Generate a plan in JSON format following the standard schema with EXACTLY ONE option.
+
+**If env_cmp.txt has candidate values:**
+{{
+  "id": "discovery_{variable_name}",
+  "objectives": ["Apply discovered value for {variable_name}"],
+  "options": [{{
+    "option_id": "1",
+    "description": "Set {variable_name} with discovered value",
+    "problem": "Placeholder needs replacement with actual value",
+    "solution": {{"action": "set_value", "path": "env.{variable_name}", "value": "<FIRST_CANDIDATE_FROM_ENV_CMP>"}},
+    "priority": "critical",
+    "impact": "Applies discovered value to environment variable",
+    "metadata": {{"variable_name": "{variable_name}", "config_path": "env.{variable_name}"}}
+  }}]
+}}
+
+**If env_cmp.txt is empty or has no relevant values:**
+{{
+  "id": "discovery_{variable_name}",
+  "objectives": ["Remove failed discovery for {variable_name}"],
+  "options": [{{
+    "option_id": "1",
+    "description": "Remove {variable_name} - discovery unsuccessful",
+    "problem": "No candidate values discovered",
+    "solution": {{"action": "remove_variable", "path": "env.{variable_name}", "value": null}},
+    "priority": "high",
+    "impact": "Removes placeholder that failed discovery",
+    "metadata": {{"variable_name": "{variable_name}", "config_path": "env.{variable_name}"}}
+  }}]
+}}
+
+Output ONLY valid JSON matching the schema."""
 
     def __init__(self, model: str = "llama3.3:latest", max_retries: int = 3, kb_path: Optional[Path] = None):
         """Initialize firmware-specific planner."""
@@ -202,7 +151,7 @@ Generate the firmware configuration plan again, following the schema EXACTLY."""
         for attempt in range(self.max_retries):
             try:
                 is_retry = attempt > 0
-                response = self._call_llm(user_prompt, is_retry=is_retry, previous_error=last_error)
+                response = self._call_llm(user_prompt, is_retry=is_retry, previous_error=last_error, state=state)
                 plan = self._parse_plan(response)
                 
                 if attempt > 0:
@@ -302,12 +251,82 @@ Generate the firmware configuration plan again, following the schema EXACTLY."""
             raise ValueError(f"Failed to instantiate firmware plan schema: {str(e)}")
     
     def _build_context(self, state: State) -> str:
-        """Build contextual information from state, enriched with KB insights and previous execution context."""
+        """
+        Build contextual information from state, enriched with KB insights and previous execution context.
+        
+        Context building is MODE-DEPENDENT:
+        - **Discovery Mode**: Only include env_cmp.txt and console.log (filtered context)
+          Purpose: Focus LLM on discovered values, avoid distraction from other data
+        
+        - **Normal Mode**: Include everything (full context)
+          - Previous config.yaml (converted to JSON)
+          - All Penguin results (console, env_missing, pseudofiles_failures, etc.)
+          - Previous action history
+          - Knowledge Base insights
+        
+        Args:
+            state: Current State with rag_context (dict), discovery_mode flag, etc.
+            
+        Returns:
+            Formatted string with context sections for LLM prompt
+        """
         context_parts = []
+        
+        # DISCOVERY MODE: Focus only on env_cmp.txt and console.log
+        if state.discovery_mode:
+            if is_verbose():
+                verbose_print(f"[PLANNER] DISCOVERY MODE active for variable: {state.discovery_variable}", prefix="[CONTEXT]")
+            
+            context_parts.append(f"## 🔍 DISCOVERY MODE - Variable: {state.discovery_variable}")
+            context_parts.append("Analyzing env_cmp.txt for candidate values and console output for errors.")
+            context_parts.append("")
+            
+            # Extract only relevant sources using dict keys
+            if "env_cmp.txt" in state.rag_context:
+                context_parts.append("## env_cmp.txt (Discovered Candidates):")
+                context_parts.append(state.rag_context["env_cmp.txt"])
+                context_parts.append("")
+            
+            if "console.log" in state.rag_context:
+                context_parts.append("## console.log (Error Context):")
+                context_parts.append(state.rag_context["console.log"])
+                context_parts.append("")
+            
+            if "env_cmp.txt" not in state.rag_context and "console.log" not in state.rag_context:
+                context_parts.append("## Note: No env_cmp.txt or console.log found in context")
+                if is_verbose():
+                    verbose_print(f"[PLANNER] Warning: Available sources: {list(state.rag_context.keys())}", prefix="[CONTEXT]")
+            
+            return "\n".join(context_parts)
+        
+        # NORMAL MODE: Full context building
+        # Add previous config.yaml from project if available
+        if state.project_path:
+            config_path = Path(state.project_path) / "config.yaml"
+            if config_path.exists():
+                try:
+                    with open(config_path, 'r') as f:
+                        config_content = f.read()
+                    context_parts.append("## Previous Penguin Configuration (config.yaml):")
+                    context_parts.append("This is the configuration used in the previous rehosting attempt.")
+                    context_parts.append("```yaml")
+                    context_parts.append(config_content)
+                    context_parts.append("```")
+                    context_parts.append("")  # Empty line for separation
+                    
+                    if is_verbose():
+                        verbose_print(f"[PLANNER] Loaded config.yaml from: {config_path}", prefix="[CONTEXT]")
+                except Exception as e:
+                    context_parts.append(f"## Note: Could not read config.yaml: {str(e)}")
+                    if is_verbose():
+                        verbose_print(f"[PLANNER] Failed to load config.yaml: {e}", prefix="[CONTEXT]")
         
         if state.rag_context:
             context_parts.append("## Retrieved Context:")
-            context_parts.extend(state.rag_context)
+            # Iterate through dict and format each source
+            for source, content in state.rag_context.items():
+                context_parts.append(f"\n### {source}:")
+                context_parts.append(content)
         
         # Add previous execution context if available
         if hasattr(state, 'previous_actions') and state.previous_actions:
@@ -363,59 +382,61 @@ Generate the firmware configuration plan again, following the schema EXACTLY."""
         
         context = "\n".join(context_parts) if context_parts else "No additional context available."
         
-        if is_verbose():
-            verbose_print("=" * 70)
-            verbose_print("CONTEXT BUILT FOR LLM (with KB + Previous Execution)", prefix="[PLANNER]")
-            verbose_print("=" * 70)
-            verbose_print(f"\n{context}\n")
-            verbose_print("=" * 70)
-        
         return context
     
-    def _extract_symptoms(self, rag_context: List[str]) -> List[str]:
-        """Extract symptoms from RAG context for KB querying."""
+    def _extract_symptoms(self, rag_context: Dict[str, str]) -> List[str]:
+        """
+        Extract symptoms from RAG context for Knowledge Base querying.
+        
+        Symptoms are high-level problem indicators that the KB can match against
+        to provide relevant guidance (e.g., "env_missing.yaml shows unknown variable"
+        triggers KB entry about discovery mode workflow).
+        
+        Args:
+            rag_context: Dict with source names as keys (e.g., "console.log", "env_cmp.txt")
+            
+        Returns:
+            List of symptom strings for KB matching
+        """
         symptoms = []
         
-        for ctx in rag_context:
-            ctx_lower = ctx.lower()
-            
-            # Look for common symptom patterns
-            if "env_missing" in ctx_lower or "environment variable" in ctx_lower:
-                symptoms.append("env_missing.yaml shows unknown variable")
-            
-            if "env_cmp" in ctx_lower:
-                symptoms.append("env_cmp.txt contains candidate values")
-            
-            if "no configuration" in ctx_lower or "missing configuration" in ctx_lower:
+        # Check for specific sources in the dict
+        if "env_missing.yaml" in rag_context:
+            symptoms.append("env_missing.yaml shows unknown variable")
+        
+        if "env_cmp.txt" in rag_context:
+            symptoms.append("env_cmp.txt contains dynamic discovery candidate values")
+        
+        if "console.log" in rag_context:
+            console_content = rag_context["console.log"].lower()
+            if "no configuration" in console_content or "missing configuration" in console_content:
                 symptoms.append("Console errors about missing configuration")
             
-            if "/dev/" in ctx_lower and ("not found" in ctx_lower or "no such" in ctx_lower):
+            if "/dev/" in console_content and ("not found" in console_content or "no such" in console_content):
                 symptoms.append("/dev/* file not found")
-            
-            if "pseudofiles_failures" in ctx_lower:
-                symptoms.append("pseudofiles_failures.yaml shows device failures")
+        
+        if "pseudofiles_failures.yaml" in rag_context:
+            symptoms.append("pseudofiles_failures.yaml shows device failures")
         
         return symptoms
     
     def _build_prompt(self, state: State, context: str) -> str:
-        """Construct the full planning prompt."""
+        """Construct the user prompt with goal, context, and constraints (no instructions)."""
         prompt_parts = [
-            f"## User Goal:\n{state.goal}",
+            f"## Goal:\n{state.goal}",
             f"\n## Context:\n{context}",
         ]
         
         if state.budget:
             prompt_parts.append(f"\n## Constraints:\n{json.dumps(state.budget, indent=2)}")
         
-        prompt_parts.append("\n## Task:")
-        prompt_parts.append("Create a comprehensive plan to achieve the user goal. Output the plan in JSON format following the pre-defined schema by system.")
-        
         return "\n".join(prompt_parts)
     
-    def _call_llm(self, user_prompt: str, is_retry: bool = False, previous_error: Optional[str] = None) -> str:
+    def _call_llm(self, user_prompt: str, is_retry: bool = False, previous_error: Optional[str] = None, state: Optional[State] = None) -> str:
         """Call Ollama LLM to generate the plan."""
+        schema_str = json.dumps(self.EXPECTED_RESPONSE_SCHEMA, indent=2)
+        
         if is_retry:
-            schema_str = json.dumps(self.EXPECTED_RESPONSE_SCHEMA, indent=2)
             system_prompt = self.RETRY_SYSTEM_PROMPT.format(schema=schema_str)
             retry_user_prompt = f"""Previous attempt failed with error: {previous_error}
 
@@ -424,10 +445,19 @@ Generate the firmware configuration plan again, following the schema EXACTLY."""
 REMEMBER: Output ONLY valid JSON matching the exact schema. No markdown, no explanations."""
             user_prompt = retry_user_prompt
         else:
-            schema_str = json.dumps(self.EXPECTED_RESPONSE_SCHEMA, indent=2)
-            system_prompt = f"""{self.SYSTEM_PROMPT}
+            # Use discovery mode prompt if in discovery mode
+            if state and state.discovery_mode:
+                variable_name = state.discovery_variable or "unknown"
+                system_prompt = self.DISCOVERY_MODE_PROMPT.format(variable_name=variable_name)
+                
+                if is_verbose():
+                    verbose_print(f"[PLANNER] Using DISCOVERY MODE prompt for variable: {variable_name}", prefix="[LLM]")
+            else:
+                # Append schema at the END to highlight expected format
+                system_prompt = f"""{self.SYSTEM_PROMPT}
 
-Expected JSON Schema:
+## Expected JSON Output Format
+
 {schema_str}"""
         
         messages = [
@@ -458,12 +488,6 @@ Expected JSON Schema:
         
         llm_response = response['message']['content']
         
-        if is_verbose():
-            verbose_print("=" * 70)
-            verbose_print("LLM RESPONSE RECEIVED", prefix="[PLANNER]")
-            verbose_print("=" * 70)
-            verbose_print(llm_response)
-            verbose_print("=" * 70)
         
         return llm_response
     

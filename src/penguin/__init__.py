@@ -18,7 +18,6 @@ from .results import (
     get_penguin_results,
     get_penguin_errors,
 )
-from .formatters import format_results_for_llm, format_results_detailed
 
 __all__ = [
     "PenguinClient",
@@ -27,7 +26,5 @@ __all__ = [
     "get_penguin_results_dir",
     "get_penguin_results",
     "get_penguin_errors",
-    "format_results_for_llm",
-    "format_results_detailed",
 ]
 

@@ -34,7 +34,11 @@ class KnowledgeBase:
                     "impact": "requires_iteration",
                     "description": "Use dynamic analysis with magic value to discover correct value. Requires re-running Penguin.",
                     "next_steps": "After re-run, check env_cmp.txt for candidate values",
-                    "requires_rerun": True
+                    "requires_rerun": True,
+                    "metadata_example": {
+                        "variable_name": "sxid",
+                        "config_path": "env.sxid"
+                    }
                 },
                 "engineer_view": {
                     "tool": "add_environment_variable_placeholder",
@@ -52,7 +56,8 @@ class KnowledgeBase:
                         "Use add_environment_variable_placeholder to set magic value: DYNVALDYNVALDYNVAL",
                         "Re-run Penguin to collect env_cmp.txt",
                         "Check env_cmp.txt for candidate values",
-                        "This is an iterative step - requires follow-up rehosting attempt to find the actual value from the results"
+                        "This is an iterative step - requires follow-up rehosting attempt to find the actual value from the results",
+                        "Extract variable name from option metadata if available"
                     ]
                 }
             }
@@ -71,7 +76,11 @@ class KnowledgeBase:
                     "impact": "critical",
                     "description": "Candidate values found via dynamic analysis. Select and apply one. If we see candidates in env_cmp.txt, this action is at the highest priority.",
                     "selection_criteria": "Usually first non-empty candidate is correct",
-                    "requires_rerun": True
+                    "requires_rerun": True,
+                    "metadata_example": {
+                        "variable_name": "sxid",
+                        "config_path": "env.sxid"
+                    }
                 },
                 "engineer_view": {
                     "tool": "set_environment_variable_value",
@@ -91,7 +100,8 @@ class KnowledgeBase:
                         "Pick first valid candidate (non-empty, non-garbage)",
                         "Use set_environment_variable_value to replace magic value with selected candidate",
                         "Re-run to verify new errors appear (progress indicator)",
-                        "Compare console.log differences to confirm progress"
+                        "Compare console.log differences to confirm progress",
+                        "Variable name is provided in option metadata - use metadata.variable_name directly"
                     ]
                 }
             }

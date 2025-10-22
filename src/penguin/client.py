@@ -7,7 +7,6 @@ from configparser import ConfigParser
 
 from .operations import penguin_init, penguin_run
 from .results import get_penguin_results_dir, get_penguin_results, get_penguin_errors
-from .formatters import format_results_for_llm, format_results_detailed
 
 
 class PenguinClient:
@@ -31,9 +30,9 @@ class PenguinClient:
         >>> project = Path("projects/firmware_001")
         >>> result = client.run(project)
         >>> 
-        >>> # Get results
+        >>> # Get results as dict for LLM workflow
         >>> results = client.get_results(project)
-        >>> summary = client.format_for_llm(results)
+        >>> context_dict = client.get_context_dict(results)
     """
     
     def __init__(self, config: ConfigParser):
@@ -85,19 +84,34 @@ class PenguinClient:
         
         return penguin_init(self.config, firmware_path)
     
-    def run(self, project_path: Path) -> subprocess.CompletedProcess:
+    def run(self, project_path: Path) -> Dict[str, Any]:
         """
-        Run Penguin rehosting on an initialized project.
+        Run Penguin rehosting on an initialized project and collect results.
+        
+        This method now returns a combined dictionary containing both the
+        runtime execution info and the parsed result files.
         
         Args:
             project_path: Path to the Penguin project directory
             
         Returns:
-            subprocess.CompletedProcess with execution results
+            Dictionary containing:
+            - "run_result": subprocess.CompletedProcess object
+            - "returncode": exit code from Penguin run
+            - "output": terminal output from run (cleaned of ANSI codes)
+            - Plus all fields from get_results() (success, run_number, parsed, etc.)
             
         Raises:
             FileNotFoundError: If project directory or config doesn't exist
+            
+        Example:
+            >>> combined = client.run(project_path)
+            >>> print(f"Exit code: {combined['returncode']}")
+            >>> print(f"Files collected: {combined['summary']['files_collected']}")
+            >>> context = client.get_context_dict(combined)
         """
+        import re
+        
         if not project_path.exists():
             raise FileNotFoundError(f"Project directory not found: {project_path}")
         
@@ -105,7 +119,27 @@ class PenguinClient:
         if not config_file.exists():
             raise FileNotFoundError(f"Project config not found: {config_file}")
         
-        return penguin_run(self.config, project_path)
+        # Execute Penguin run
+        run_result = penguin_run(self.config, project_path)
+        
+        # Collect parsed results
+        results = get_penguin_results(self.config, project_path, run_number=None)
+        
+        # Clean ANSI codes from terminal output
+        output = getattr(run_result, '_merged_output', '')
+        if output:
+            ansi_escape = re.compile(r'\x1b\[[0-9;]*m')
+            output = ansi_escape.sub('', output)
+        
+        # Merge into single dict
+        combined = {
+            "run_result": run_result,
+            "returncode": run_result.returncode,
+            "output": output,
+            **results  # Unpack all results fields (success, run_number, files, parsed, summary)
+        }
+        
+        return combined
     
     def get_results(
         self,
@@ -153,114 +187,72 @@ class PenguinClient:
         """
         return get_penguin_errors(results)
     
-    def format_for_llm(self, results: Dict[str, Any]) -> str:
+    def get_context_dict(self, results: Dict[str, Any]) -> Dict[str, str]:
         """
-        Format results for LLM consumption.
+        Extract context as a dictionary ready for multi-agent workflow.
+        
+        This method provides direct dict access to Penguin results, avoiding
+        the need to format as string and then parse back to dict.
         
         Args:
             results: Results dictionary from get_results()
             
         Returns:
-            Concise formatted string suitable for LLM analysis
-        """
-        return format_results_for_llm(results)
-    
-    def format_detailed(self, results: Dict[str, Any]) -> str:
-        """
-        Format results with full detail.
-        
-        Args:
-            results: Results dictionary from get_results()
+            Dictionary with keys as source names and values as content strings:
+            - "console.log": cleaned console output
+            - "env_cmp.txt": environment comparison data  
+            - "env_missing.yaml": formatted YAML data
+            - "pseudofiles_failures.yaml": formatted YAML data
+            - "penguin_results": summary with stats and errors
             
-        Returns:
-            Detailed formatted string with all available information
+        Example:
+            >>> results = client.get_results(project_path)
+            >>> context = client.get_context_dict(results)
+            >>> # Access specific files directly
+            >>> console_log = context.get("console.log", "")
+            >>> env_cmp = context.get("env_cmp.txt", "")
         """
-        return format_results_detailed(results)
-    
-    def execute_workflow(
-        self,
-        firmware_path: str,
-        project_path: Optional[Path] = None
-    ) -> Dict[str, Any]:
-        """
-        Execute complete workflow: init -> run -> collect results.
+        import json
         
-        Args:
-            firmware_path: Path to firmware binary
-            project_path: Optional path where project exists. If None, will be 
-                         auto-detected from penguin init output.
+        if not results["success"]:
+            return {"error": results.get("error", "Unknown error")}
+        
+        context = {}
+        
+        # Add penguin_results summary
+        summary_parts = []
+        summary_parts.append(f"Run #{results['run_number']}")
+        summary_parts.append(f"Results directory: {results['results_dir']}")
+        summary_parts.append(f"Files collected: {results['summary']['files_collected']}")
+        summary_parts.append(f"Files missing: {results['summary']['files_missing']}")
+        
+        # Add statistics if available
+        if results["summary"].get("statistics"):
+            summary_parts.append("\nStatistics:")
+            for key, value in results["summary"]["statistics"].items():
+                summary_parts.append(f"  {key}: {value}")
+        
+        # Add errors
+        errors = get_penguin_errors(results)
+        if errors and errors != ["No errors found"]:
+            summary_parts.append("\nErrors:")
+            summary_parts.extend([f"  - {e}" for e in errors])
+        
+        context["penguin_results"] = "\n".join(summary_parts)
+        
+        # Add each parsed file as separate key
+        for filename, content in results["parsed"].items():
+            if content is None:
+                continue
             
-        Returns:
-            Dictionary with workflow results including:
-            - firmware_path: input firmware path
-            - project_path: actual project path (auto-detected or provided)
-            - init_result: initialization subprocess result
-            - run_result: execution subprocess result  
-            - analysis: collected Penguin results
-            - errors: extracted errors
-            - llm_summary: formatted summary for LLM
-            - success: overall workflow success status
-        """
-        workflow_results = {
-            "firmware_path": firmware_path,
-            "project_path": None,
-            "success": False,
-            "init_result": None,
-            "run_result": None,
-            "analysis": None,
-            "errors": None,
-            "llm_summary": None
-        }
-        
-        try:
-            # Initialize (get project path from init if not provided)
-            if project_path is None:
-                print(f"[Workflow] Step 1: Initializing firmware (auto-detecting project path)...")
-                init_result, detected_project_path = self.init(firmware_path)
-                workflow_results["init_result"] = init_result
-                
-                if detected_project_path is None:
-                    workflow_results["errors"] = ["Failed to detect project path from penguin init output"]
-                    return workflow_results
-                
-                project_path = detected_project_path
-                workflow_results["project_path"] = str(project_path)
-                print(f"[Workflow] Detected project path: {project_path}")
+            # Format based on data type
+            if isinstance(content, str):
+                context[filename] = content
+            elif isinstance(content, (dict, list)):
+                # Convert YAML/JSON structures to readable format
+                context[filename] = json.dumps(content, indent=2)
             else:
-                print(f"[Workflow] Step 1: Initializing firmware at {project_path}...")
-                init_result, _ = self.init(firmware_path)
-                workflow_results["init_result"] = init_result
-                workflow_results["project_path"] = str(project_path)
-            
-            if init_result.returncode != 0:
-                workflow_results["errors"] = ["Initialization failed"]
-                return workflow_results
-            
-            # Run
-            print(f"[Workflow] Step 2: Running Penguin rehosting...")
-            run_result = self.run(project_path)
-            workflow_results["run_result"] = run_result
-            
-            # Collect results regardless of run success
-            print(f"[Workflow] Step 3: Collecting results...")
-            analysis = self.get_results(project_path)
-            workflow_results["analysis"] = analysis
-            
-            # Extract errors
-            errors = self.get_errors(analysis)
-            workflow_results["errors"] = errors
-            
-            # Format for LLM
-            workflow_results["llm_summary"] = self.format_for_llm(analysis)
-            
-            # Mark as successful if we got results
-            workflow_results["success"] = analysis.get("success", False)
-            
-            print(f"[Workflow] Complete!")
-            
-        except Exception as e:
-            workflow_results["errors"] = [f"Workflow exception: {str(e)}"]
-            print(f"[Workflow] Error: {e}")
+                context[filename] = str(content)
         
-        return workflow_results
+        return context
 

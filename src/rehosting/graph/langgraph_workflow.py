@@ -27,7 +27,7 @@ class RehostingState(TypedDict):
     # Base fields from State
     goal: str
     plan: Any  # FirmwareConfigPlan
-    rag_context: list[str]
+    rag_context: dict[str, str]  # Changed from list to dict (key=source, value=content)
     budget: dict[str, Any]
     done: bool
     
@@ -39,6 +39,10 @@ class RehostingState(TypedDict):
     actions: Annotated[Sequence[ActionRecord], operator.add]  # Append-only list
     engineer_summary: list[dict]
     execution_complete: bool
+    
+    # Discovery mode tracking
+    discovery_mode: bool
+    discovery_variable: str
     
     # Results
     errors: list[str]
@@ -172,7 +176,10 @@ class RehostingWorkflow:
         planner_state = State(
             goal=state["goal"],
             rag_context=state["rag_context"],
-            budget=state["budget"]
+            budget=state["budget"],
+            project_path=state.get("project_path"),
+            discovery_mode=state.get("discovery_mode", False),
+            discovery_variable=state.get("discovery_variable")
         )
         
         # Add previous execution context for learning from past iterations
@@ -225,16 +232,20 @@ class RehostingWorkflow:
     def run(
         self,
         firmware_path: str,
-        rag_context: list[str],
-        goal: str = "Analyze Penguin rehosting results and generate configuration update plan"
+        rag_context: dict[str, str],
+        goal: str = "Analyze Penguin rehosting results and generate configuration update plan",
+        discovery_mode: bool = False,
+        discovery_variable: str = None
     ) -> Dict[str, Any]:
         """
         Run the complete workflow.
         
         Args:
             firmware_path: Path to the firmware being rehosted
-            rag_context: Context from Penguin results
+            rag_context: Context from Penguin results (dict with source keys)
             goal: Primary goal for the planner
+            discovery_mode: Whether in discovery mode
+            discovery_variable: Name of variable being discovered
             
         Returns:
             Final state after workflow completion
@@ -253,6 +264,8 @@ class RehostingWorkflow:
             "actions": [],
             "engineer_summary": [],
             "execution_complete": False,
+            "discovery_mode": discovery_mode,
+            "discovery_variable": discovery_variable or "",
             "errors": []
         }
         
@@ -263,7 +276,7 @@ class RehostingWorkflow:
             verbose_print(f"Firmware: {firmware_path}", prefix="[WORKFLOW]")
             verbose_print(f"Project: {self.project_path}", prefix="[WORKFLOW]")
             verbose_print(f"Goal: {goal}", prefix="[WORKFLOW]")
-            verbose_print(f"Context items: {len(rag_context)}", prefix="[WORKFLOW]")
+            verbose_print(f"Context sources: {list(rag_context.keys())}", prefix="[WORKFLOW]")
             verbose_print("=" * 70)
         
         print("\n" + "=" * 70)

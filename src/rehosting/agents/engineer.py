@@ -60,49 +60,75 @@ class EngineerAgent:
     # Available tools for the Engineer (from tool definitions)
     AVAILABLE_TOOLS = get_all_tool_schemas()
 
-    SYSTEM_PROMPT = """You are an Engineer agent specialized in implementing firmware rehosting configuration changes.
+    SYSTEM_PROMPT = """You are an Engineer implementing firmware rehosting config changes.
 
-Your role:
-1. Receive a high-level objective/option from the Planner
-2. Reason about HOW to implement it using available tools
-3. Generate specific tool calls with exact parameters
+**Your Task:** Convert high-level objectives into specific tool calls.
 
-Available Tools:
-{tools}
+**Available Tools:** {tools}
 
-Output Format:
-You MUST return ONLY valid JSON with this structure:
+**Option Context:**
+The planner provides options with optional "metadata" field containing structured data:
+- variable_name: Env var name (e.g., "sxid")
+- config_path: Path in config (e.g., "env.sxid")
+- device_path: Device file path (e.g., "/dev/mtd1")
+
+**Use metadata when available** - it provides precise parameters and avoids ambiguity.
+
+**Output JSON:**
 {{
-  "reasoning": "Brief explanation of your approach",
+  "reasoning": "Brief explanation",
   "action": "execute" | "skip",
   "tool_calls": [
     {{
       "tool": "tool_name",
-      "params": {{
-        "param1": "value1",
-        "param2": "value2",
-        "reason": "why this change is needed"
-      }}
+      "params": {{"param1": "value1", "reason": "why needed"}}
     }}
   ],
-  "skip_reason": "Explanation of why this option cannot be solved with available tools (only if action is 'skip')"
+  "skip_reason": "Why skipped (if action='skip')"
 }}
 
-Rules:
-- Use the exact tool names from the available tools list
-- Provide all required parameters for each tool
-- Always include a clear "reason" parameter
-- For environment variables that you see are missing: use add_environment_variable_placeholder (for discovery).
-- For environment variables that we have already do dynamic discovery on and get the value from the planner: use set_environment_variable_value (for real values). The value should replace the placeholder magic value i.e., use the same path!
-- For pseudofiles: use add_pseudofile, set_file_read_behavior, set_file_ioctl_behavior
-- For network: use add_network_interface
-- For analysis: use grep_strace_output
-- For scripts: use replace_script_exit0
-- If NO available tool can solve this problem, set "action": "skip" and provide "skip_reason"
-- Only set "action": "execute" if you can actually implement the solution with available tools
-- Only generate ONE action per option.
-- Output ONLY the JSON, no markdown, no explanations outside JSON
-"""
+**Key Rules:**
+- ⚠️ add_environment_variable_placeholder: ONLY ONCE per execution cycle
+- For env vars with known values: use set_environment_variable_value
+- For missing devices: use add_pseudofile
+- ONE action per option
+- Output ONLY JSON, no markdown"""
+
+    DISCOVERY_MODE_PROMPT = """🔍 DISCOVERY MODE: Apply or remove discovered environment variable.
+
+## Context
+The planner analyzed env_cmp.txt results and decided to either apply a discovered value or remove a failed discovery placeholder.
+
+**Your Task:** Implement the planner's decision using the appropriate tool.
+
+**Available Tools:** {tools}
+
+**Option metadata (use this directly):**
+- variable_name: "{variable_name}"
+- config_path: "{config_path}"
+
+**Planner's solution structure:**
+- action: "set_value" OR "remove_variable"
+- path: "env.<variable_name>"
+- value: discovered value (if set_value) OR null (if remove)
+
+**Implementation:**
+- If solution.action="set_value": Use set_environment_variable_value(name=metadata.variable_name, value=solution.value, reason="Applied discovered value from env_cmp.txt")
+- If solution.action="remove_variable": Use remove_environment_variable(name=metadata.variable_name, reason="Discovery failed, no candidates found")
+
+⚠️ Use metadata.variable_name directly - don't parse from path string.
+
+**Output JSON:**
+{{
+  "reasoning": "Brief explanation of what you're implementing",
+  "action": "execute",
+  "tool_calls": [{{
+    "tool": "set_environment_variable_value" | "remove_environment_variable",
+    "params": {{"name": "<variable_name>", "value": "<value_or_omit>", "reason": "<explanation>"}}
+  }}]
+}}
+
+Output ONLY JSON, no markdown."""
 
     def __init__(self, project_path: Path, model: str = "llama3.3:latest", max_retries: int = 2, kb_path: Optional[Path] = None, max_options: int = 3):
         """
@@ -122,23 +148,42 @@ Rules:
         self.kb = get_knowledge_base(kb_path)
         self.state = EngineerState()
         self.tool_registry = ConfigToolRegistry(project_path)
+        self.discovery_mode = False  # Track discovery mode
     
-    def execute_plan(self, plan: Any) -> Dict[str, Any]:
+    def execute_plan(self, plan: Any, discovery_mode: bool = False) -> Dict[str, Any]:
         """
-        Execute all options in a plan sequentially.
+        Execute all options in a plan sequentially with LLM-guided tool selection.
+        
+        The Engineer uses LLM to reason about HOW to implement each option:
+        1. Receives high-level option (description, problem, solution)
+        2. Calls LLM to decide which tools to use and with what parameters
+        3. Executes the tool calls via ConfigToolRegistry
+        4. Records results for each action
+        
+        Discovery mode behavior:
+        - In discovery mode: Typically only ONE option (apply or remove)
+        - LLM uses specialized DISCOVERY_MODE_PROMPT
+        - Option metadata provides variable_name directly
         
         Args:
             plan: Plan object from the Planner (with 'options' field)
+            discovery_mode: Whether in discovery mode (affects prompts and max_options)
             
         Returns:
-            Dictionary with execution results and summary
+            Dictionary with:
+            - "action_records": List of ActionRecord objects
+            - "summary": List of execution summaries
+            - "success": Boolean indicating overall success
         """
+        self.discovery_mode = discovery_mode
+        
         if is_verbose():
             verbose_print("=" * 70)
             verbose_print("ENGINEER: STARTING PLAN EXECUTION", prefix="[ENGINEER]")
             verbose_print("=" * 70)
             verbose_print(f"Plan ID: {plan.id}", prefix="[ENGINEER]")
             verbose_print(f"Total Options: {len(plan.options)}", prefix="[ENGINEER]")
+            verbose_print(f"Discovery Mode: {discovery_mode}", prefix="[ENGINEER]")
             verbose_print("=" * 70)
         
         total_options = len(plan.options)
@@ -219,11 +264,17 @@ Rules:
                 }
             )
             
+            # Extract tool information from execution result
+            executed_tools = execution_result.get("executed_tools", [])
+            # For ActionRecord, use the first tool if multiple were called
+            actual_tool = executed_tools[0].get("tool", "unknown") if executed_tools else "unknown"
+            actual_params = executed_tools[0].get("params", {}) if executed_tools else {}
+            
             # Record the action
             action_record = ActionRecord(
                 step_id=option_id,
-                tool=tool,
-                input=params,
+                tool=actual_tool,
+                input=actual_params,
                 output_uri=execution_result.get("file_path", ""),
                 summary=execution_result.get("message", ""),
                 status=execution_result.get("status", "unknown")
@@ -335,10 +386,30 @@ Rules:
             all_changes = []
             messages = []
             successful_calls = 0
+            placeholder_tool_used = False  # Track if we've used the placeholder tool
             
             for i, tool_call in enumerate(tool_calls, 1):
                 tool_name = tool_call.get("tool", "unknown")
                 params = tool_call.get("params", {})
+                
+                # CRITICAL SAFEGUARD: Prevent multiple placeholder calls
+                if tool_name == "add_environment_variable_placeholder":
+                    # Check if already used in previous options
+                    for record in self.state.action_records:
+                        if record.tool == "add_environment_variable_placeholder":
+                            error_msg = "⚠️ BLOCKED: add_environment_variable_placeholder already called in a previous option. Only ONE placeholder variable allowed per rehosting cycle."
+                            verbose_print(f"  🚫 {error_msg}", prefix="[ENGINEER]")
+                            messages.append(error_msg)
+                            continue
+                    
+                    # Check if already used in current option
+                    if placeholder_tool_used:
+                        error_msg = "⚠️ BLOCKED: Multiple add_environment_variable_placeholder calls detected. Only ONE allowed."
+                        verbose_print(f"  🚫 {error_msg}", prefix="[ENGINEER]")
+                        messages.append(error_msg)
+                        continue
+                    
+                    placeholder_tool_used = True
                 
                 verbose_print(f"[EXECUTING {i}/{len(tool_calls)}] Tool: {tool_name}", prefix="[ENGINEER]")
                 verbose_print(f"  Params: {json.dumps(params, indent=2)}", prefix="[ENGINEER]")
@@ -390,7 +461,8 @@ Rules:
                 "status": status,
                 "message": message,
                 "file_path": str(self.project_path / "config.yaml"),
-                "changes": {"tool_calls": len(tool_calls), "successful": successful_calls, "changes": all_changes}
+                "changes": {"tool_calls": len(tool_calls), "successful": successful_calls, "changes": all_changes},
+                "executed_tools": tool_calls  # Add the actual tool calls for ActionRecord
             }
             
         except Exception as e:
@@ -472,7 +544,24 @@ Generate the implementation plan as JSON."""
 
                 # Format tools for the prompt
                 tools_text = json.dumps(self.AVAILABLE_TOOLS, indent=2)
-                system_prompt = self.SYSTEM_PROMPT.format(tools=tools_text)
+                
+                # Use discovery mode prompt if in discovery mode
+                if self.discovery_mode:
+                    # Extract metadata for discovery mode prompt
+                    metadata = option_data.get("metadata", {})
+                    variable_name = metadata.get("variable_name", "unknown")
+                    config_path = metadata.get("config_path", f"env.{variable_name}")
+                    
+                    system_prompt = self.DISCOVERY_MODE_PROMPT.format(
+                        tools=tools_text,
+                        variable_name=variable_name,
+                        config_path=config_path
+                    )
+                    if is_verbose():
+                        verbose_print("[ENGINEER] Using DISCOVERY MODE prompt", prefix="[LLM]")
+                        verbose_print(f"[ENGINEER] Metadata: variable_name={variable_name}, config_path={config_path}", prefix="[LLM]")
+                else:
+                    system_prompt = self.SYSTEM_PROMPT.format(tools=tools_text)
                 
                 messages = [
                     {"role": "system", "content": system_prompt},
@@ -594,22 +683,27 @@ Generate the implementation plan as JSON."""
             State updates to merge (includes action records)
         """
         plan = state.get("plan")
+        discovery_mode = state.get("discovery_mode", False)
         
         if not plan:
             print("[Engineer] Warning: No plan provided, skipping execution")
             return {
                 "actions": [],
-                "engineer_summary": "No plan to execute"
+                "engineer_summary": "No plan to execute",
+                "discovery_mode": False  # Exit discovery mode if we were in it
             }
         
-        # Execute the plan
-        results = self.execute_plan(plan)
+        # Execute the plan with discovery mode if applicable
+        results = self.execute_plan(plan, discovery_mode=discovery_mode)
         
         # Return state updates
+        # Exit discovery mode after execution
         return {
             "actions": results["action_records"],
             "engineer_summary": results["summary"],
-            "execution_complete": True
+            "execution_complete": True,
+            "discovery_mode": False,  # Always exit discovery mode after engineer executes
+            "discovery_variable": ""  # Clear the variable
         }
 
 

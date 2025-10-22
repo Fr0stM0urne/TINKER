@@ -11,7 +11,7 @@ from pathlib import Path
 # Add current directory to path for module imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.rehosting.workflow import rehost_firmware
+from src.rehosting.rehosting_workflow import rehost_firmware
 from src.settings import set_verbose
 
 

@@ -40,17 +40,17 @@ TOOL_DEFINITIONS = {
     
     "add_environment_variable_placeholder": ToolDefinition(
         name="add_environment_variable_placeholder",
-        description="Add a new environment variable with a magic placeholder value for dynamic discovery. This sets the variable to 'DYNVALDYNVALDYNVAL' so Penguin can detect what values it's compared against. Never change the igloo_init env var. This function can only be invoked ONCE for each rehosting attempt, even with multiple options. The env var name argument you provide must be one that you see indication is missing. Do not make up any fake arguments.",
+        description="Add a new environment variable with a magic placeholder value for dynamic discovery. This sets the variable to 'DYNVALDYNVALDYNVAL' so Penguin can detect what values it's compared against during rehosting. ⚠️ CRITICAL CONSTRAINT: This tool can ONLY be invoked ONCE per entire engineer execution cycle (across ALL options in the plan). Multiple placeholder variables will cause the rehosting to crash. If multiple variables need discovery, prioritize the most critical ONE and defer others to the next iteration. Never change the igloo_init env var. The env var name must be one that you see clear indication is missing. Do not make up fake arguments.",
         parameters={
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "The name of the environment variable."
+                    "description": "The name of the SINGLE environment variable to add for dynamic discovery. Only ONE variable can be discovered per rehosting cycle."
                 },
                 "reason": {
                     "type": "string",
-                    "description": "A concise sentence on why you are invoking this tool. What errors/signs did you see, if any?."
+                    "description": "A concise sentence explaining why THIS specific variable was chosen as the highest priority for discovery. What errors/signs did you see?"
                 }
             },
             "required": ["name", "reason"],
