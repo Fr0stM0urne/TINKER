@@ -47,7 +47,6 @@ class KnowledgeBase:
                         {
                             "params": {
                                 "name": "sxid",
-                                "path": "env.sxid",
                                 "reason": "Missing environment variable detected in logs - using magic value for dynamic discovery"
                             }
                         }
@@ -89,7 +88,6 @@ class KnowledgeBase:
                         {
                             "params": {
                                 "name": "sxid",
-                                "path": "env.sxid",
                                 "value": "<actual_value_from_env_cmp.txt>",
                                 "reason": "Candidate value from env_cmp.txt - replacing magic value with actual value"
                             }
